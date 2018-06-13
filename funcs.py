@@ -1,56 +1,72 @@
 import tensorflow as tf
 
+
 def mu_encode(x, mu, n_quanta):
     '''mu-law encode and quantize'''
     mu_ten = tf.to_float(mu)
     amp = tf.sign(x) * tf.log1p(mu * tf.abs(x)) / tf.log1p(mu)
     quant = (amp + 1) * 0.5 * mu + 0.5
 
+class WaveNet(object):
 
-def create_filter(name, shape):
-    initializer = tf.contrib.layers.xavier_initializer_conv2d()
-    variable = tf.Variable(initializer(shape=shape), name=name)
-    return variable
-    
+    def __init__(self,
+            n_blocks,
+            n_block_layers,
+            n_in_chan,
+            n_out_chan,
+            batch_sz):
 
-def create_wavenet(n_blocks, n_block_layers, n_in_chan, n_out_chan, batch_sz):
-    '''main wavenet structure'''
-    raw = tf.placeholder(tf.float32, [batch_sz, None, n_in_chan])
-    cur = raw
-    # filters[b][l] = [pos][in_chan][out_chan]
-    filters = [[None] * n_block_layers] * n_blocks
+        self.n_blocks = n_blocks
+        self.n_block_layers = n_block_layers
+        self.n_in_chan = n_in_chan
+        self.n_out_chan = n_out_chan
+        self.batch_sz = batch_sz
+        
 
-    # saved[b][l] = [batch][pos][out_chan]
-    saved = [[None] * n_block_layers] * n_blocks
-    all_saved = []
+    def create_filter(self, name, shape):
+        initializer = tf.contrib.layers.xavier_initializer_conv2d()
+        variable = tf.Variable(initializer(shape=shape), name=name)
+        return variable
+        
 
-    for b in range(n_blocks):
+    def create_graph(self, graph):
+        '''main wavenet structure'''
 
-        for l in range(n_block_layers):
-            dil = 2**l
-            filters[b][l] = create_filter('filter_%i_%i' % (b,l), [2, n_in_chan, n_out_chan]) 
-            saved[b][l] = tf.Variable(tf.zeros([batch_sz, dil + 2, n_out_chan]),
-                    name='saved_%i_%i' % (b,l))
-            all_saved.append(saved[b][l])
-            conv = tf.nn.convolution(cur, filters[b][l], 'VALID')
-            cur = tf.concat([tf.stop_gradient(saved[b][l]), conv], 1)
-            saved[b][l].assign(cur[:,-(dil+1):,:])
+        with graph.as_default():
+            in_shape = [self.batch_sz, None, self.n_in_chan]
+            self.raw_input = tf.placeholder(tf.float32, in_shape)
+            cur = self.raw_input
 
-    saved_vars_init = tf.variables_initializer(all_saved)
+            # filters[b][l] = [pos][in_chan][out_chan]
+            filters = [[None] * self.n_block_layers] * self.n_blocks
 
-    def init():
-        with tf.Session() as sess:
-            sess.run(tf.global_variables_initializer())
+            # saved[b][l] = [batch][pos][out_chan]
+            saved = [[None] * self.n_block_layers] * self.n_blocks
+            all_saved = []
+
+            filter_shape = [2, self.n_in_chan, self.n_out_chan]
+            for b in range(self.n_blocks):
+                with tf.name_scope('block%i' % b):
+                    for l in range(self.n_block_layers):
+                        with tf.name_scope('layer%i' % l):
+                            dil = 2**l
+                            filters[b][l] = self.create_filter('filter', filter_shape) 
+                            saved_shape = [self.batch_sz, dil + 1, self.n_out_chan]
+                            saved[b][l] = tf.Variable(tf.zeros(saved_shape), name='saved')
+                            all_saved.append(saved[b][l])
+                            conv = tf.nn.convolution(cur, filters[b][l], 'VALID')
+                            cur = tf.concat([tf.stop_gradient(saved[b][l]), conv], 1, name='concat')
+                            saved[b][l].assign(cur[:,-(dil+1):,:])
+
+            self.saved_vars_init = tf.variables_initializer(all_saved, 'saved_init')
+            self.output = conv
 
 
-    def predict(wave, beg, end, is_continue):
+    def predict(self, sess, wave, beg, end, is_continue):
         '''calculate top-level convolutions of a subrange of wave.
         if _is_first_run, previous state is re-initialized'''
-        with tf.Session() as sess:
-            if (not is_continue):
-                sess.run(saved_vars_init)
-            sess.run(tf.global_variables_initializer())    
-            return sess.run(conv, feed_dict = { raw: wave[:,beg:end,:] })
-
-    return (init, predict)
+        if (not is_continue):
+            sess.run(self.saved_vars_init)
+        ret = sess.run(self.output, feed_dict = { self.raw_input: wave[:,beg:end,:] })
+        return ret
 
