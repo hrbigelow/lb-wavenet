@@ -43,6 +43,7 @@ class WaveNet(object):
             # saved[b][l] = [batch][pos][out_chan]
             saved = [[None] * self.n_block_layers] * self.n_blocks
             all_saved = []
+            all_filters = []
 
             filter_shape = [2, self.n_in_chan, self.n_out_chan]
             for b in range(self.n_blocks):
@@ -51,14 +52,16 @@ class WaveNet(object):
                         with tf.name_scope('layer%i' % l):
                             dil = 2**l
                             filters[b][l] = self.create_filter('filter', filter_shape) 
-                            saved_shape = [self.batch_sz, dil + 1, self.n_out_chan]
+                            saved_shape = [self.batch_sz, dil, self.n_out_chan]
                             saved[b][l] = tf.Variable(tf.zeros(saved_shape), name='saved')
                             all_saved.append(saved[b][l])
-                            conv = tf.nn.convolution(cur, filters[b][l], 'VALID')
+                            all_filters.append(filters[b][l])
+                            conv = tf.nn.convolution(cur, filters[b][l], 'VALID', [1], [dil], 'conv')
                             cur = tf.concat([tf.stop_gradient(saved[b][l]), conv], 1, name='concat')
-                            saved[b][l].assign(cur[:,-(dil+1):,:])
+                            saved[b][l].assign(cur[:,-dil:,:])
 
             self.saved_vars_init = tf.variables_initializer(all_saved, 'saved_init')
+            self.filters_init = tf.variables_initializer(all_filters, 'filters_init')
             self.output = conv
 
 
