@@ -12,7 +12,6 @@ class WaveNet(object):
     def __init__(self,
             n_blocks,
             n_block_layers,
-            batch_sz,
             n_in_chan,
             n_res_chan,
             n_dil_chan):
@@ -22,81 +21,112 @@ class WaveNet(object):
         self.n_in_chan = n_in_chan
         self.n_res_chan = n_res_chan
         self.n_dil_chan = n_dil_chan
-        self.batch_sz = batch_sz
+        self.filters = []
+        self.saved = []
         
 
     def create_filter(self, name, shape):
         initializer = tf.contrib.layers.xavier_initializer_conv2d()
         variable = tf.Variable(initializer(shape=shape), name=name)
         return variable
+
+
+    def preprocess(self):
+        input_shape = [None, None, self.n_in_chan]
+        filter_shape = [1, self.n_in_chan, self.n_res_chan]
+
+        with tf.name_scope('inputs'):
+            self.raw_input = tf.placeholder(tf.float32, input_shape, name='raw')
+            self.is_first = tf.placeholder(tf.int32, [], name='is_first')
+
+        with tf.name_scope('preprocess'):
+            filt = self.create_filter('in_filter', filter_shape)
+            pre_op = tf.nn.convolution(self.raw_input, filt,
+                    'VALID', [1], [1], 'in_conv')
+
+        self.filters.append(filt)
+        return pre_op
+
+    
+    def dilated_conv(self, prev_op, dilation): 
+        '''construct one dilated, gated convolution as in equation 2 of WaveNet Sept 2016'''
+        batch_sz = tf.shape(self.raw_input)[0]
+        conv_shape = [2, self.n_res_chan, self.n_dil_chan]
+        saved_shape = [batch_sz, dilation, self.n_res_chan]
+        prepend_len = dilation * (1 - self.is_first)
         
+        with tf.name_scope('dilated_conv'):
+            signal_filt = self.create_filter('filter', conv_shape) 
+            gate_filt = self.create_filter('gate', conv_shape) 
+            self.filters.append(signal_filt)
+            self.filters.append(gate_filt)
+            save = tf.Variable(tf.zeros(saved_shape), name='saved_length%i' % dilation,
+                    validate_shape = False)
+            self.saved.append(save)
+            stop_grad = tf.stop_gradient(save)
+            concat = tf.concat([stop_grad[:,0:prepend_len,:], prev_op], 
+                    1, name='concat')
+            assign = save.assign(concat[:,-dilation:,:])
+
+            signal = tf.nn.convolution(concat, signal_filt, 
+                    'VALID', [1], [dilation], 'signal_dilation%i' % dilation)
+            post_signal = tf.tanh(signal)
+            gate = tf.nn.convolution(concat, gate_filt,
+                    'VALID', [1], [dilation], 'gate_dilation%i' % dilation)
+            post_gate = tf.sigmoid(gate)
+
+            with tf.control_dependencies([assign]):
+                z = post_signal + post_gate
+                
+        return z 
+
+
+    def chan_reduce(self, prev_op):
+        shape = [1, self.n_dil_chan, self.n_res_chan]
+
+        with tf.name_scope('chan_reduce'):
+            filt = self.create_filter('dense_filter', shape)
+            self.filters.append(filt)
+            chan = tf.nn.convolution(prev_op, filt,
+                    'VALID', [1], [1], 'conv')
+        return chan
+
 
     def create_graph(self, graph):
         '''main wavenet structure'''
 
         with graph.as_default():
-            in_shape = [self.batch_sz, None, self.n_in_chan]
-            self.raw_input = tf.placeholder(tf.float32, in_shape)
-
-            all_filters = []
-
-            in_filter_shape = [1, self.n_in_chan, self.n_res_chan]
-            with tf.name_scope('channel_convert'):
-                in_filter = self.create_filter('in_filter', in_filter_shape)
-                cur = tf.nn.convolution(self.raw_input, in_filter, 'VALID', [1], [1], 'in_conv')
-
-            all_filters.append(in_filter)
-
-            # filters[b][l] = [pos][res_chan][dil_chan]
-            filter_shape = [2, self.n_res_chan, self.n_dil_chan]
-            filters = [[None] * self.n_block_layers] * self.n_blocks
-
-            # dense_filters[b][l] = [0][out_chan][in_chan]
-            dense_filter_shape = [1, self.n_dil_chan, self.n_res_chan]
-            dense_filters = [[None] * self.n_block_layers] * self.n_blocks
-            
-            # saved[b][l] = [batch][pos][out_chan]
-            saved = [[None] * self.n_block_layers] * self.n_blocks
-            self.all_saved = []
+            cur = self.preprocess()
+            skip = []
 
             for b in range(self.n_blocks):
-                with tf.name_scope('block%i' % b):
+                with tf.name_scope('block%i' % (b + 1)):
                     for l in range(self.n_block_layers):
-                        with tf.name_scope('layer%i' % l):
+                        with tf.name_scope('layer%i' % (l + 1)):
                             dil = 2**l
-                            saved_shape = [self.batch_sz, dil, self.n_res_chan]
+                            dil_conv_op = self.dilated_conv(cur, dil)
+                            chan_reduce_op = self.chan_reduce(dil_conv_op)
+                            skip.append(chan_reduce_op)
+                            cur = cur + chan_reduce_op
 
-                            with tf.name_scope('dilated_conv'):
-                                filters[b][l] = self.create_filter('filter', filter_shape) 
-                                saved[b][l] = tf.Variable(tf.zeros(saved_shape), name='saved')
-                                concat = tf.concat([tf.stop_gradient(saved[b][l]), cur], 1,
-                                        name='concat')
-                                assign = saved[b][l].assign(concat[:,-dil:,:])
-                                with tf.control_dependencies([assign]):
-                                    dil_conv = tf.nn.convolution(concat, filters[b][l], 
-                                            'VALID', [1], [dil], 'conv')
 
-                            with tf.name_scope('chan_reduce'):
-                                dense_filters[b][l] = self.create_filter('dense_filter', 
-                                        dense_filter_shape)
-                                chan = tf.nn.convolution(dil_conv, dense_filters[b][l],
-                                        'VALID', [1], [1], 'conv')
-
-                            self.all_saved.append(saved[b][l])
-                            all_filters.append(filters[b][l])
-                            all_filters.append(dense_filters[b][l])
-                            cur = chan
-
-            self.saved_vars_init = tf.variables_initializer(self.all_saved, 'saved_init')
-            self.filters_init = tf.variables_initializer(all_filters, 'filters_init')
-            self.output = cur 
+            self.saved_init = tf.variables_initializer(self.saved, 'saved_init')
+            self.filters_init = tf.variables_initializer(self.filters, 'filters_init')
+        self.output = cur 
 
 
     def predict(self, sess, wave, beg, end, is_first):
         '''calculate top-level convolutions of a subrange of wave.
         if _is_first_run, previous state is re-initialized'''
+        wave_window = wave[:,beg:end,:]
         if (is_first):
-            sess.run(self.saved_vars_init)
-        ret = sess.run(self.output, feed_dict = { self.raw_input: wave[:,beg:end,:] })
+            sess.run(self.saved_init,
+                    feed_dict = { self.raw_input: wave })
+
+        ret = sess.run(self.output, 
+                feed_dict = {
+                    self.raw_input: wave_window,
+                    self.is_first: int(is_first) 
+                    })
         return ret
 
