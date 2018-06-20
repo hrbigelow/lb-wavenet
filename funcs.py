@@ -30,8 +30,6 @@ class WaveNet(object):
         self.n_skip_chan = n_skip_chan
         self.n_post1_chan = n_post1_chan
         self.n_quant_chan = n_quant_chan
-        # difference between input and output length of full network
-        self.burn_sz = n_blocks * sum([2**l for l in range(n_block_layers)])
         self.filters = []
         self.saved = []
         
@@ -52,6 +50,14 @@ class WaveNet(object):
         with tf.name_scope('config_inputs'):
             self.batch_sz = tf.shape(self.raw_input)[0]
             self.is_first = tf.placeholder(tf.int32, [], name='is_first')
+            # burn_sz is the difference between input and output length of full network
+            # if we are in continuation mode, the network fills in from memory and
+            # doesn't have any burn-in
+            self.burn_sz = self.is_first \
+                * self.n_blocks \
+                * sum([2**l for l in range(self.n_block_layers)])
+
+            self.output_sz = tf.shape(self.raw_input)[1] - self.burn_sz
 
         with tf.name_scope('preprocess'):
             filt = self.create_filter('in_filter', filter_shape)
@@ -150,7 +156,6 @@ class WaveNet(object):
         with graph.as_default():
             cur = self.preprocess()
             skip = []
-            output_sz = tf.shape(self.raw_input)[1] - self.burn_sz
 
             for b in range(self.n_blocks):
                 with tf.name_scope('block%i' % (b + 1)):
@@ -158,7 +163,7 @@ class WaveNet(object):
                         with tf.name_scope('layer%i' % (l + 1)):
                             dil = 2**l
                             dil_conv_op = self.dilated_conv(cur, dil, self.is_first, self.batch_sz)
-                            (signal_op, skip_op) = self.chan_reduce(dil_conv_op, output_sz)
+                            (signal_op, skip_op) = self.chan_reduce(dil_conv_op, self.output_sz)
                             skip.append(skip_op)
                             new_win = tf.shape(signal_op)[1]
                             cur = tf.add(cur[:,-new_win:,:], signal_op, name='residual_add') 
@@ -180,8 +185,8 @@ class WaveNet(object):
 
         ret = sess.run(self.output, 
                 feed_dict = {
-                    self.raw_input: wave_window,
-                    self.is_first: int(is_first) 
+                    self.is_first: int(is_first), 
+                    self.raw_input: wave_window
                     })
         return ret
 

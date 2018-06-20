@@ -3,9 +3,35 @@
 This is an implementation of WaveNet in TensorFlow, mostly as practice, and to get
 any feedback from the community, though I hope it will also be useful to others.
 
-## Approaches
+## Conditional independence across time boundary
 
-![Influence of Nodes](images/wavenet_influence_fade.png)
+WaveNet's stack of dilated convolutions means all nodes to the right of a time
+boundary are conditionally independent from all nodes to the left given a
+subset of those nodes, outlined in purple.  In particular, this means we can
+compute the output of an arbitrarily long sequence in stages, each time storing
+the values of only those purple nodes to continue the calculation.
+
+The diagram below also illustrates how input nodes influence the output.  The
+raw input is shown on the bottom row with dilated convolutions [1, 2, 4, 8] * 3
+shown above, the top row being the final output.  The input values are zeros
+extending infinitely to the left, and 4096 extending to the right, with a
+boundary near the left end of the diagram.  All filter weights are set to
+\[0.5, 0.5\].  In this setup, any given convolution node reflects the fraction
+of zero and 4096-valued input nodes.  Notice that the top row nodes are zero up
+until the point where the input transition starts.  Also, the left-most
+4096-valued output node (top, towards the right) is the first position where
+the receptive field does not cross the boundary in the input.  All output nodes
+in between reflect a mix of influence from zero-valued and 4096-valued input.
+
+Consider the convolutions extending indefinitely in either direction as shown.
+At any given boundary (such as the black vertical line, the values of the set
+of all nodes to the right only depend on the values of the nodes outlined in
+purple.  All other nodes to the left merely propagate their influence via those
+in purple. 
+
+
+
+![Influence of Nodes](images/wavenet_influence.png)
 
 I use the same caching approach as @tomlepaine fast-wavenet for avoiding redundant
 convolution calculations.  The cached values are stored in tf.Variable's so that the
