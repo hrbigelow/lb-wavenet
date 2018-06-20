@@ -5,16 +5,18 @@ any feedback from the community, though I hope it will also be useful to others.
 
 ## Approaches
 
+![Influence of Nodes](images/wavenet_influence_fade.png)
+
 I use the same caching approach as @tomlepaine fast-wavenet for avoiding redundant
 convolution calculations.  The cached values are stored in tf.Variable's so that the
 values persist across sess.run() calls.
 
 The chain of dilated convolutions are always stride=1 and VALID, so each output
 tensor is shorter than the previous by the size of the dilation.  While it is
-typical to think of the 'receptive field' of a single output node.  In this
+typical to think of the 'receptive field' of a single output node, in the WaveNet 
 architecture, the receptive fields of any two adjacent output nodes are two
 windows of input nodes offset by one position.  It is useful, then, to think of
-'the receptive field of a window of output nodes as a window of input.  The
+"the receptive field of a window of output nodes" as a window of input.  The
 relationship is:
 
 ```
@@ -50,22 +52,51 @@ determine whether to prepend a zero-length slice or the full length slice of
 these stored values. 
 
 
-## Batching and different length input .wav files
+## SGD batch using consecutive samples from multiple .wav files
 
 From the point of view of WaveNet, a single .wav file of length N represents N
-- burn_sz individual training samples, each one a window of burn_sz + 1 input
-  values, with the next value as the target.  For a chosen SGD batch size of
-samples, one might ask whether the optimal batch would consist of scattered
-windows from the files, or if it is okay to have a number of consecutive
-windows from the same .wav file.  From a computational efficiency point of
-view, insisting on completely scattered windows would be extremely inefficient,
+- burn_sz individual training samples. Each sample is a window of burn_sz + 1
+  input values, with the next value serving as the target.  I'll call two
+adjacent windows 'consecutive samples'.  For a given SGD batch size, one might
+ask whether the optimal batch would consist of scattered windows from the
+files, or if it is okay to have a number of consecutive windows from each of a
+smaller number of .wav files.  From a computational efficiency point of view,
+insisting on completely scattered windows would be extremely inefficient,
 requiring full computation of convolutions starting from the entire burn_sz
 window.
 
-In this work, I have taken the approach to require consecutive windows of input
-in each SGD batch, but to allow easily adjusting the number of windows and
-number of different individual wav files.
+In this work, my approach is to require consecutive samples of input in each
+SGD batch, but to allow the user to choose the number of consecutive samples
+and the number of concurrent .wav files.  The tradeoff can be adjusted by the
+user.
 
+The very first SGD batch includes the first samples from each .wav file.  For
+example with VCTK files, a short period of background noise before the speaker
+starts the sentence.  This first batch will be run in 'initial' mode.
+Subsequent SGD batches will be run on the next window of input
+(non-overlapping) using 'continuation' mode.  Because of the structure of the
+network, the computed output values in continuation mode will be identical to
+those that would be produced in initial mode with a longer window.
+
+## Problem from different-length .wav files
+
+The above initial / continuation scheme works assuming every .wav file is
+exactly the same length.  Since the lengths are all different, I chose the
+approach illustrated below.  
+
+
+
+
+
+
+
+
+
+
+
+### Tradeoff between wasting calculation and excessive start-stop
+
+There is a practical problem arising from the fact that 
 
  
 
