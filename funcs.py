@@ -49,15 +49,6 @@ class WaveNet(object):
 
         with tf.name_scope('config_inputs'):
             self.batch_sz = tf.shape(self.raw_input)[0]
-            self.is_first = tf.placeholder(tf.int32, [], name='is_first')
-            # burn_sz is the difference between input and output length of full network
-            # if we are in continuation mode, the network fills in from memory and
-            # doesn't have any burn-in
-            self.burn_sz = self.is_first \
-                * self.n_blocks \
-                * sum([2**l for l in range(self.n_block_layers)])
-
-            self.output_sz = tf.shape(self.raw_input)[1] - self.burn_sz
 
         with tf.name_scope('preprocess'):
             filt = self.create_filter('in_filter', filter_shape)
@@ -68,17 +59,16 @@ class WaveNet(object):
         return pre_op
 
     
-    def dilated_conv(self, prev_op, dilation, is_first, batch_sz): 
+    def dilated_conv(self, prev_op, dilation, batch_sz): 
         '''construct one dilated, gated convolution as in equation 2 of WaveNet Sept 2016'''
     
         # save last postiions from prev_op
         with tf.name_scope('load_store_values'):
-            prepend_len = dilation * (1 - is_first)
             saved_shape = [batch_sz, dilation, self.n_res_chan]
             save = tf.Variable(tf.zeros(saved_shape), name='saved_length%i' % dilation,
                     validate_shape = False)
             stop_grad = tf.stop_gradient(save)
-            concat = tf.concat([stop_grad[:,0:prepend_len,:], prev_op], 1, name='concat')
+            concat = tf.concat([stop_grad, prev_op], 1, name='concat')
             assign = save.assign(concat[:,-dilation:,:])
         self.saved.append(save)
 
@@ -106,7 +96,7 @@ class WaveNet(object):
         return z 
 
 
-    def chan_reduce(self, prev_op, output_sz):
+    def chan_reduce(self, prev_op):
         sig_shape = [1, self.n_dil_chan, self.n_res_chan]
         skip_shape = [1, self.n_dil_chan, self.n_skip_chan]
         with tf.name_scope('signal_%i_to_%i' % (sig_shape[1], sig_shape[2])):
@@ -118,8 +108,7 @@ class WaveNet(object):
         with tf.name_scope('skip_%i_to_%i' % (skip_shape[1], skip_shape[2])):
             skip_filt = self.create_filter('filter', skip_shape)
             self.filters.append(skip_filt)
-            top_window = prev_op[:,-output_sz:,:]
-            skip = tf.nn.convolution(top_window, skip_filt,
+            skip = tf.nn.convolution(prev_op, skip_filt,
                     'VALID', [1], [1], 'conv')
 
         return signal, skip 
@@ -162,11 +151,11 @@ class WaveNet(object):
                     for l in range(self.n_block_layers):
                         with tf.name_scope('layer%i' % (l + 1)):
                             dil = 2**l
-                            dil_conv_op = self.dilated_conv(cur, dil, self.is_first, self.batch_sz)
-                            (signal_op, skip_op) = self.chan_reduce(dil_conv_op, self.output_sz)
+                            dil_conv_op = self.dilated_conv(cur, dil, self.batch_sz)
+                            (signal_op, skip_op) = self.chan_reduce(dil_conv_op)
                             skip.append(skip_op)
                             new_win = tf.shape(signal_op)[1]
-                            cur = tf.add(cur[:,-new_win:,:], signal_op, name='residual_add') 
+                            cur = tf.add(cur, signal_op, name='residual_add') 
             sum_all = sum(skip)
             out = self.postprocess(sum_all)
             self.saved_init = tf.variables_initializer(self.saved, 'saved_init')
@@ -175,17 +164,13 @@ class WaveNet(object):
         return graph
 
 
-    def predict(self, sess, wave, beg, end, is_first):
+    def predict(self, sess, wave, beg, end):
         '''calculate top-level convolutions of a subrange of wave.
         if _is_first_run, previous state is re-initialized'''
         wave_window = wave[:,beg:end,:]
-        if (is_first):
-            sess.run(self.saved_init,
-                    feed_dict = { self.raw_input: wave })
 
         ret = sess.run(self.output, 
                 feed_dict = {
-                    self.is_first: int(is_first), 
                     self.raw_input: wave_window
                     })
         return ret
