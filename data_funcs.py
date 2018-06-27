@@ -57,19 +57,24 @@ def gen_concat_slices(wav_itr, slice_sz, recep_field_sz, sess):
     consume itr, which yields [voice_id, wav_data]
 
     concatenate slices of slice_sz, yielding 
-    (uint16 [slice_sz], float32 [slice_sz])
+    (int32 [slice_sz], float32 [slice_sz])
     where:
-    out[0][t] = ids_val
-    out[1][t] = wav_val
+    out[0][t] = wav_val
+    out[1][t] = mid 
+    out[2][mid] = vid
+
+    vid is the voice id of the speaker.  mid is the mapping id used for this
+    slice.
     
     the special id value of zero indicates that this position is an invalid
     training window.
     '''
     need_sz = slice_sz 
-    spliced_wav = np.empty([0], np.float)
-    spliced_ids = np.empty([0], np.uint16)
+    spliced_wav = np.empty(0, np.float)
+    spliced_ids = np.empty(0, np.int32)
     ne = wav_itr.get_next()
-    zero_lead = tf.zeros([recep_field_sz - 1], dtype=tf.uint16)
+    zero_lead = np.full(recep_field_sz - 1, 0, np.int32)
+    idmap = [0]
 
     while True:
         try:
@@ -77,7 +82,25 @@ def gen_concat_slices(wav_itr, slice_sz, recep_field_sz, sess):
         except tf.errors.OutOfRangeError:
             break
         wav_sz = wav.shape[0] 
-        ids = tf.concat(zero_lead, tf.fill([wav_sz - recep_field_sz + 1], vid)) 
+        if wav_sz < recep_field_sz:
+            printf('Warning: skipping length %i wav file (voice id %i).  '
+                    + 'Shorter than receptive field size of %i\n' 
+                    % (wav_sz, vid, recep_field_sz))
+            continue
+        try:
+            mid = idmap.index(vid)
+        except ValueError:
+            idmap += vid
+            mid = len(idmap) - 1
+
+        slice_hi_bound = min(need_sz, wav_sz)
+        slice_lo_bound = max(need_sz, recep_field_sz - 1)
+        ids = np.concatenate([
+            zero_lead, 
+            np.full(slice_hi_bound - slice_lo_bound, mid, np.int32), 
+            np.full(wav_sz - slice_hi_bound, 1, np.int32)
+            ])
+
         cur_item_pos = 0
         
         while need_sz <= (wav_sz - cur_item_pos):
@@ -85,13 +108,13 @@ def gen_concat_slices(wav_itr, slice_sz, recep_field_sz, sess):
             spliced_wav = np.append(spliced_wav, wav[cur_item_pos:cur_item_pos + need_sz])
             spliced_ids = np.append(spliced_ids, ids[cur_item_pos:cur_item_pos + need_sz])
             cur_item_pos += need_sz 
-            yield (spliced_ids, spliced_wav) 
-            spliced_wav = np.empty([0], np.float) 
-            spliced_ids = np.empty([0], np.uint16)
+            yield (spliced_wav, spliced_ids, idmap) 
+            spliced_wav = np.empty(0, np.float) 
+            spliced_ids = np.empty(0, np.int32)
+            idmap = [0, vid]
             need_sz = slice_sz 
         if cur_item_pos != wav_sz:
-            # still have a chunk of wav left to start a new slice,
-            # but not enough to make a full slice
+            # append this piece of wav to the current slice 
             spliced_wav = np.append(spliced_wav, wav[cur_item_pos:])
             spliced_ids = np.append(spliced_ids, ids[cur_item_pos:])
             need_sz -= (wav_sz - cur_item_pos)
@@ -99,12 +122,11 @@ def gen_concat_slices(wav_itr, slice_sz, recep_field_sz, sess):
 
 
 
-def wav_dataset(sam_path, slice_sz, sample_rate, sess):
+def wav_dataset(sam_path, slice_sz, batch_sz, recep_field_sz, sample_rate, sess):
     '''parse a sample file and create a ts.data.Dataset of concatenated,
     labeled slices from it'''
     zero_d = tf.TensorShape([])
     one_d = tf.TensorShape([None])
-    two_d = tf.TensorShape([None, 3])
     d1 = tf.data.Dataset.from_generator(lambda: gen_sample_map(sam_path),
             (tf.int32, tf.string),
             (zero_d, zero_d))
@@ -116,7 +138,15 @@ def wav_dataset(sam_path, slice_sz, sample_rate, sess):
             (tf.int32, tf.float32), (zero_d, one_d))
     i3 = d3.make_one_shot_iterator()
 
-    d4 = tf.data.Dataset.from_generator(lambda: gen_concat_slices(i3, slice_sz, sess),
-            (tf.int32, tf.float32), (two_d, one_d))
-    return d4
+    d4 = tf.data.Dataset.from_generator(
+            lambda: gen_concat_slices(i3, slice_sz, recep_field_sz, sess),
+            (tf.float32, tf.int32, tf.int32), (one_d, one_d, one_d))
 
+    slice_ne = [d4.make_one_shot_iterator().get_next()] * batch_sz
+    def next_slice():
+        return sess.run(slice_ne)
+
+    return next_slice 
+
+
+def 

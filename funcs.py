@@ -20,7 +20,9 @@ class WaveNet(object):
             n_dil_chan,
             n_skip_chan,
             n_post1_chan,
-            n_quant_chan):
+            n_quant_chan,
+            n_gc_embed_chan,
+            n_gc_cat):
 
         self.n_blocks = n_blocks
         self.n_block_layers = n_block_layers
@@ -30,28 +32,40 @@ class WaveNet(object):
         self.n_skip_chan = n_skip_chan
         self.n_post1_chan = n_post1_chan
         self.n_quant_chan = n_quant_chan
+        self.n_gc_embed_chan = n_gc_embed_chan
+        self.n_gc_cat = n_gc_cat
+        self.use_gc = n_gc_embed_chan > 0
         self.filters = []
         self.saved = []
         
 
-    def create_filter(self, name, shape):
+    def create_var(self, name, shape):
         initializer = tf.contrib.layers.xavier_initializer_conv2d()
         variable = tf.Variable(initializer(shape=shape), name=name)
         return variable
 
 
     def preprocess(self):
-        input_shape = [None, None, self.n_in_chan]
+        raw_shape = [None, None, self.n_in_chan]
+        mask_shape = [None, None]
         filter_shape = [1, self.n_in_chan, self.n_res_chan]
 
         with tf.name_scope('data_input'):
-            self.raw_input = tf.placeholder(tf.float32, input_shape, name='raw')
+            self.raw_input = tf.placeholder(tf.float32, raw_shape, name='raw')
+            self.id_mask = tf.placeholder(tf.int32, mask_shape, name='id_mask')
+            self.id_map = tf.placeholder(tf.int32, mask_shape, name='id_map')
 
         with tf.name_scope('config_inputs'):
             self.batch_sz = tf.shape(self.raw_input)[0]
 
         with tf.name_scope('preprocess'):
-            filt = self.create_filter('in_filter', filter_shape)
+            filt = self.create_var('in_filter', filter_shape)
+            if self.use_gc:
+                self.gc_tab = self.create_var('gc_tab',
+                        [self.n_gc_embed_chan, self.n_gc_cat])
+                self.filters.append(self.gc_tab)
+                # gc_embeds[batch][i] = embedding vector
+                self.gc_embeds = tf.nn.embedding_lookup(self.gc_tab, self.id_map)
             pre_op = tf.nn.convolution(self.raw_input, filt,
                     'VALID', [1], [1], 'in_conv')
 
@@ -75,14 +89,32 @@ class WaveNet(object):
         # construct signal and gate logic
         conv_shape = [2, self.n_res_chan, self.n_dil_chan]
         with tf.name_scope('signal'):
-            signal_filt = self.create_filter('filter', conv_shape) 
+            signal_filt = self.create_var('filter', conv_shape) 
             signal = tf.nn.convolution(concat, signal_filt, 
                     'VALID', [1], [dilation], 'dilation%i_conv' % dilation)
 
         with tf.name_scope('gate'):
-            gate_filt = self.create_filter('filter', conv_shape) 
+            gate_filt = self.create_var('filter', conv_shape) 
             gate = tf.nn.convolution(concat, gate_filt,
                     'VALID', [1], [dilation], 'dilation%i_conv' % dilation)
+
+        if self.use_gc:
+            gc_conv_shape = [1, self.n_gc_embed_chan, self.n_dil_chan]
+            with tf.name_scope('signal'):
+                gc_signal_filt = self.create_var('filter', gc_conv_shape) 
+                gc_proj_signal_embeds = tf.nn.convolution(self.gc_embeds, gc_signal_filt,
+                        'VALID', [1], [1], 'gc_proj_signal_embeds')
+                gc_signal = tf.gather(gc_proj_signal_embeds, self.id_mask)
+
+            with tf.name_scope('gate'):
+                gc_gate_filt = self.create_var('filter', gc_conv_shape)
+                gc_proj_gate_embeds = tf.nn.convolution(self.gc_embeds, gc_gate_filt,
+                        'VALID', [1], [1], 'gc_proj_gate_embeds')
+                gc_gate = tf.gather(gc_proj_gate_embeds, self.id_mask)
+
+            signal = tf.add(signal, gc_signal, 'add_gc_signal')
+            gate = tf.add(gate, gc_gate, 'add_gc_gate')
+
 
         self.filters.append(signal_filt)
         self.filters.append(gate_filt)
@@ -100,13 +132,13 @@ class WaveNet(object):
         sig_shape = [1, self.n_dil_chan, self.n_res_chan]
         skip_shape = [1, self.n_dil_chan, self.n_skip_chan]
         with tf.name_scope('signal_%i_to_%i' % (sig_shape[1], sig_shape[2])):
-            sig_filt = self.create_filter('filter', sig_shape)
+            sig_filt = self.create_var('filter', sig_shape)
             self.filters.append(sig_filt)
             signal = tf.nn.convolution(prev_op, sig_filt,
                     'VALID', [1], [1], 'conv')
 
         with tf.name_scope('skip_%i_to_%i' % (skip_shape[1], skip_shape[2])):
-            skip_filt = self.create_filter('filter', skip_shape)
+            skip_filt = self.create_var('filter', skip_shape)
             self.filters.append(skip_filt)
             skip = tf.nn.convolution(prev_op, skip_filt,
                     'VALID', [1], [1], 'conv')
@@ -122,12 +154,12 @@ class WaveNet(object):
         with tf.name_scope('postprocess'):
             relu1 = tf.nn.relu(prev_op, 'ReLU')
             with tf.name_scope('chan_%i_to_%i' % (shape1[1], shape1[2])):
-                filt1 = self.create_filter('filter', shape1)
+                filt1 = self.create_var('filter', shape1)
                 dense1 = tf.nn.convolution(relu1, filt1, 'VALID', [1], [1], 'conv')
 
             relu2 = tf.nn.relu(dense1, 'ReLU')
             with tf.name_scope('chan_%i_to_%i' % (shape2[1], shape2[2])):
-                filt2 = self.create_filter('filter', shape2)
+                filt2 = self.create_var('filter', shape2)
                 dense2 = tf.nn.convolution(relu2, filt2, 'VALID', [1], [1], 'conv')
 
             with tf.name_scope('softmax'):
@@ -154,7 +186,6 @@ class WaveNet(object):
                             dil_conv_op = self.dilated_conv(cur, dil, self.batch_sz)
                             (signal_op, skip_op) = self.chan_reduce(dil_conv_op)
                             skip.append(skip_op)
-                            new_win = tf.shape(signal_op)[1]
                             cur = tf.add(cur, signal_op, name='residual_add') 
             sum_all = sum(skip)
             out = self.postprocess(sum_all)
