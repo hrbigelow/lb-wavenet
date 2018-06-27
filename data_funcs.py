@@ -52,20 +52,24 @@ def gen_wav_files(path_itr, sample_rate, sess):
     return
 
 
-def gen_concat_slices(wav_itr, slice_sz, sess):
+def gen_concat_slices(wav_itr, slice_sz, recep_field_sz, sess):
     '''generates slices from a virtually concatenated set of .wav files.
     consume itr, which yields [voice_id, wav_data]
 
     concatenate slices of slice_sz, yielding 
-    (int32 [None,2], float32 [slice_sz])
+    (uint16 [slice_sz], float32 [slice_sz])
     where:
-    out[0][i] = [voice_id, wav_offset, slice_offset]
+    out[0][t] = ids_val
     out[1][t] = wav_val
+    
+    the special id value of zero indicates that this position is an invalid
+    training window.
     '''
     need_sz = slice_sz 
-    offsets = []
-    spliced = np.empty([0], np.float)
+    spliced_wav = np.empty([0], np.float)
+    spliced_ids = np.empty([0], np.uint16)
     ne = wav_itr.get_next()
+    zero_lead = tf.zeros([recep_field_sz - 1], dtype=tf.uint16)
 
     while True:
         try:
@@ -73,20 +77,24 @@ def gen_concat_slices(wav_itr, slice_sz, sess):
         except tf.errors.OutOfRangeError:
             break
         wav_sz = wav.shape[0] 
+        ids = tf.concat(zero_lead, tf.fill([wav_sz - recep_field_sz + 1], vid)) 
         cur_item_pos = 0
         
         while need_sz <= (wav_sz - cur_item_pos):
-            spliced = np.append(spliced, wav[cur_item_pos:cur_item_pos + need_sz])
-            offsets.append([vid, cur_item_pos, slice_sz - need_sz])
+            # use up a chunk of the current item and yield the slice
+            spliced_wav = np.append(spliced_wav, wav[cur_item_pos:cur_item_pos + need_sz])
+            spliced_ids = np.append(spliced_ids, ids[cur_item_pos:cur_item_pos + need_sz])
             cur_item_pos += need_sz 
-            yield (offsets, spliced) 
-            offsets = [] 
-            spliced = np.empty([0], np.float) 
+            yield (spliced_ids, spliced_wav) 
+            spliced_wav = np.empty([0], np.float) 
+            spliced_ids = np.empty([0], np.uint16)
             need_sz = slice_sz 
         if cur_item_pos != wav_sz:
-            splice = np.append(spliced, wav[cur_item_pos:])
-            offsets.append([vid, cur_item_pos, slice_sz - need_sz]) 
-            need_sz -= wav_sz - cur_item_pos
+            # still have a chunk of wav left to start a new slice,
+            # but not enough to make a full slice
+            spliced_wav = np.append(spliced_wav, wav[cur_item_pos:])
+            spliced_ids = np.append(spliced_ids, ids[cur_item_pos:])
+            need_sz -= (wav_sz - cur_item_pos)
     return
 
 
