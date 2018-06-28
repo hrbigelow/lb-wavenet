@@ -145,6 +145,5 @@ def wav_dataset(sam_path, slice_sz, batch_sz, recep_field_sz, sample_rate, sess)
             (tf.float32, tf.int32, tf.int32), (one_d, one_d, one_d))
 
     slice_next_elems = [d4.make_one_shot_iterator().get_next()] * batch_sz
-    return i3
-    #return [tf.stack([s[i] for s in slice_next_elems]) for i in range(3)]
+    return [tf.stack([s[i] for s in slice_next_elems]) for i in range(3)]
 

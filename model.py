@@ -1,12 +1,19 @@
 import tensorflow as tf
 
 
-def mu_encode(x, mu, n_quanta):
+def mu_encode(x, n_quanta):
     '''mu-law encode and quantize'''
-    mu_ten = tf.to_float(mu)
+    mu = tf.to_float(n_quanta - 1)
     amp = tf.sign(x) * tf.log1p(mu * tf.abs(x)) / tf.log1p(mu)
     quant = (amp + 1) * 0.5 * mu + 0.5
+    return tf.to_int32(quant)
 
+
+
+def create_var(name, shape):
+    initializer = tf.contrib.layers.xavier_initializer_conv2d()
+    variable = tf.Variable(initializer(shape=shape), name=name)
+    return variable
 
 
 
@@ -15,52 +22,53 @@ class WaveNet(object):
     def __init__(self,
             n_blocks,
             n_block_layers,
-            n_in_chan,
+            n_quant_chan,
             n_res_chan,
             n_dil_chan,
             n_skip_chan,
             n_post1_chan,
-            n_quant_chan,
             n_gc_embed_chan,
+            n_gc_category,
             l2_factor):
 
         self.n_blocks = n_blocks
         self.n_block_layers = n_block_layers
-        self.n_in_chan = n_in_chan
+        self.n_quant_chan = n_quant_chan
         self.n_res_chan = n_res_chan
         self.n_dil_chan = n_dil_chan
         self.n_skip_chan = n_skip_chan
         self.n_post1_chan = n_post1_chan
-        self.n_quant_chan = n_quant_chan
         self.n_gc_embed_chan = n_gc_embed_chan
+        self.n_gc_category = n_gc_category
         self.use_gc = n_gc_embed_chan > 0
-        self.n2_factor = l2_factor
+        self.l2_factor = l2_factor
         self.filters = []
         self.saved = []
         
+    def get_recep_field_sz(self):
+        return self.n_blocks * sum([2**l for l in range(self.n_block_layers)])
 
-    def create_var(self, name, shape):
-        initializer = tf.contrib.layers.xavier_initializer_conv2d()
-        variable = tf.Variable(initializer(shape=shape), name=name)
-        return variable
 
 
     def _preprocess(self, wav_input, id_map):
         '''entry point of data coming from data.Dataset.'''  
-        filter_shape = [1, self.n_in_chan, self.n_res_chan]
+        filter_shape = [1, self.n_quant_chan, self.n_res_chan]
 
         with tf.name_scope('config_inputs'):
             self.batch_sz = tf.shape(wav_input)[0]
 
         with tf.name_scope('preprocess'):
-            filt = self.create_var('in_filter', filter_shape)
+            filt = create_var('in_filter', filter_shape)
+            wav_input_mu = mu_encode(wav_input, self.n_quant_chan)
+            wav_input_onehot = tf.one_hot(wav_input_mu, self.n_quant_chan, axis = 1)
+
             if self.use_gc:
-                self.gc_tab = self.create_var('gc_tab',
-                        [self.n_gc_embed_chan, self.n_gc_cat])
+                self.gc_tab = create_var('gc_tab',
+                        [self.n_gc_category, self.n_gc_embed_chan])
                 self.filters.append(self.gc_tab)
                 # gc_embeds[batch][i] = embedding vector
                 self.gc_embeds = tf.nn.embedding_lookup(self.gc_tab, id_map)
-            pre_op = tf.nn.convolution(wav_input, filt,
+            pre_op = tf.nn.convolution(wav_input_onehot, filt,
                     'VALID', [1], [1], 'in_conv')
 
         self.filters.append(filt)
@@ -87,14 +95,14 @@ class WaveNet(object):
         for part in ['signal', 'gate']:
             conv_shape = [2, self.n_res_chan, self.n_dil_chan]
             with tf.name_scope(part):
-                filt = self.create_var('filter', conv_shape) 
+                filt = create_var('filter', conv_shape) 
                 self.filters.append(filt)
-                v[part] = tf.nn.convolution(concat, signal_filt, 
+                v[part] = tf.nn.convolution(concat, filt, 
                         'VALID', [1], [dilation], 'dilation%i_conv' % dilation)
 
                 if self.use_gc:
                     gc_conv_shape = [1, self.n_gc_embed_chan, self.n_dil_chan]
-                    gc_filt = self.create_var('filter', gc_conv_shape) 
+                    gc_filt = create_var('filter', gc_conv_shape) 
                     self.filters.append(gc_filt)
                     gc_proj_embeds = tf.nn.convolution(self.gc_embeds, gc_filt,
                             'VALID', [1], [1], 'gc_proj_embeds')
@@ -118,13 +126,13 @@ class WaveNet(object):
         sig_shape = [1, self.n_dil_chan, self.n_res_chan]
         skip_shape = [1, self.n_dil_chan, self.n_skip_chan]
         with tf.name_scope('signal_%i_to_%i' % (sig_shape[1], sig_shape[2])):
-            sig_filt = self.create_var('filter', sig_shape)
+            sig_filt = create_var('filter', sig_shape)
             self.filters.append(sig_filt)
             signal = tf.nn.convolution(prev_op, sig_filt,
                     'VALID', [1], [1], 'conv')
 
         with tf.name_scope('skip_%i_to_%i' % (skip_shape[1], skip_shape[2])):
-            skip_filt = self.create_var('filter', skip_shape)
+            skip_filt = create_var('filter', skip_shape)
             self.filters.append(skip_filt)
             skip = tf.nn.convolution(prev_op, skip_filt,
                     'VALID', [1], [1], 'conv')
@@ -140,12 +148,12 @@ class WaveNet(object):
         with tf.name_scope('postprocess'):
             relu1 = tf.nn.relu(prev_op, 'ReLU')
             with tf.name_scope('chan_%i_to_%i' % (shape1[1], shape1[2])):
-                filt1 = self.create_var('filter', shape1)
+                filt1 = create_var('filter', shape1)
                 dense1 = tf.nn.convolution(relu1, filt1, 'VALID', [1], [1], 'conv')
 
             relu2 = tf.nn.relu(dense1, 'ReLU')
             with tf.name_scope('chan_%i_to_%i' % (shape2[1], shape2[2])):
-                filt2 = self.create_var('filter', shape2)
+                filt2 = create_var('filter', shape2)
                 dense2 = tf.nn.convolution(relu2, filt2, 'VALID', [1], [1], 'conv')
 
             with tf.name_scope('softmax'):
