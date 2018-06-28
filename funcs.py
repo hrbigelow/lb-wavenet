@@ -22,7 +22,7 @@ class WaveNet(object):
             n_post1_chan,
             n_quant_chan,
             n_gc_embed_chan,
-            n_gc_cat):
+            l2_factor):
 
         self.n_blocks = n_blocks
         self.n_block_layers = n_block_layers
@@ -33,8 +33,8 @@ class WaveNet(object):
         self.n_post1_chan = n_post1_chan
         self.n_quant_chan = n_quant_chan
         self.n_gc_embed_chan = n_gc_embed_chan
-        self.n_gc_cat = n_gc_cat
         self.use_gc = n_gc_embed_chan > 0
+        self.n2_factor = l2_factor
         self.filters = []
         self.saved = []
         
@@ -45,18 +45,12 @@ class WaveNet(object):
         return variable
 
 
-    def preprocess(self):
-        raw_shape = [None, None, self.n_in_chan]
-        mask_shape = [None, None]
+    def _preprocess(self, wav_input, id_map):
+        '''entry point of data coming from data.Dataset.'''  
         filter_shape = [1, self.n_in_chan, self.n_res_chan]
 
-        with tf.name_scope('data_input'):
-            self.raw_input = tf.placeholder(tf.float32, raw_shape, name='raw')
-            self.id_mask = tf.placeholder(tf.int32, mask_shape, name='id_mask')
-            self.id_map = tf.placeholder(tf.int32, mask_shape, name='id_map')
-
         with tf.name_scope('config_inputs'):
-            self.batch_sz = tf.shape(self.raw_input)[0]
+            self.batch_sz = tf.shape(wav_input)[0]
 
         with tf.name_scope('preprocess'):
             filt = self.create_var('in_filter', filter_shape)
@@ -65,59 +59,51 @@ class WaveNet(object):
                         [self.n_gc_embed_chan, self.n_gc_cat])
                 self.filters.append(self.gc_tab)
                 # gc_embeds[batch][i] = embedding vector
-                self.gc_embeds = tf.nn.embedding_lookup(self.gc_tab, self.id_map)
-            pre_op = tf.nn.convolution(self.raw_input, filt,
+                self.gc_embeds = tf.nn.embedding_lookup(self.gc_tab, id_map)
+            pre_op = tf.nn.convolution(wav_input, filt,
                     'VALID', [1], [1], 'in_conv')
 
         self.filters.append(filt)
         return pre_op
 
     
-    def dilated_conv(self, prev_op, dilation, batch_sz): 
+    def _dilated_conv(self, prev_op, dilation, id_mask, batch_sz): 
         '''construct one dilated, gated convolution as in equation 2 of WaveNet Sept 2016'''
     
         # save last postiions from prev_op
         with tf.name_scope('load_store_values'):
             saved_shape = [batch_sz, dilation, self.n_res_chan]
             save = tf.Variable(tf.zeros(saved_shape), name='saved_length%i' % dilation,
-                    validate_shape = False)
+                    validate_shape = False,
+                    trainable = False)
             stop_grad = tf.stop_gradient(save)
             concat = tf.concat([stop_grad, prev_op], 1, name='concat')
             assign = save.assign(concat[:,-dilation:,:])
         self.saved.append(save)
 
         # construct signal and gate logic
-        conv_shape = [2, self.n_res_chan, self.n_dil_chan]
-        with tf.name_scope('signal'):
-            signal_filt = self.create_var('filter', conv_shape) 
-            signal = tf.nn.convolution(concat, signal_filt, 
-                    'VALID', [1], [dilation], 'dilation%i_conv' % dilation)
+        v = {}
+        gc = {}
+        for part in ['signal', 'gate']:
+            conv_shape = [2, self.n_res_chan, self.n_dil_chan]
+            with tf.name_scope(part):
+                filt = self.create_var('filter', conv_shape) 
+                self.filters.append(filt)
+                v[part] = tf.nn.convolution(concat, signal_filt, 
+                        'VALID', [1], [dilation], 'dilation%i_conv' % dilation)
 
-        with tf.name_scope('gate'):
-            gate_filt = self.create_var('filter', conv_shape) 
-            gate = tf.nn.convolution(concat, gate_filt,
-                    'VALID', [1], [dilation], 'dilation%i_conv' % dilation)
-
+                if self.use_gc:
+                    gc_conv_shape = [1, self.n_gc_embed_chan, self.n_dil_chan]
+                    gc_filt = self.create_var('filter', gc_conv_shape) 
+                    self.filters.append(gc_filt)
+                    gc_proj_embeds = tf.nn.convolution(self.gc_embeds, gc_filt,
+                            'VALID', [1], [1], 'gc_proj_embeds')
+                    gc[part] = tf.gather(gc_proj_embeds, id_mask)
+        
+        (signal, gate) = (v['signal'], v['gate'])
         if self.use_gc:
-            gc_conv_shape = [1, self.n_gc_embed_chan, self.n_dil_chan]
-            with tf.name_scope('signal'):
-                gc_signal_filt = self.create_var('filter', gc_conv_shape) 
-                gc_proj_signal_embeds = tf.nn.convolution(self.gc_embeds, gc_signal_filt,
-                        'VALID', [1], [1], 'gc_proj_signal_embeds')
-                gc_signal = tf.gather(gc_proj_signal_embeds, self.id_mask)
-
-            with tf.name_scope('gate'):
-                gc_gate_filt = self.create_var('filter', gc_conv_shape)
-                gc_proj_gate_embeds = tf.nn.convolution(self.gc_embeds, gc_gate_filt,
-                        'VALID', [1], [1], 'gc_proj_gate_embeds')
-                gc_gate = tf.gather(gc_proj_gate_embeds, self.id_mask)
-
-            signal = tf.add(signal, gc_signal, 'add_gc_signal')
-            gate = tf.add(gate, gc_gate, 'add_gc_gate')
-
-
-        self.filters.append(signal_filt)
-        self.filters.append(gate_filt)
+            signal = tf.add(signal, gc['signal'], 'add_gc_signal')
+            gate = tf.add(gate, gc['gate'], 'add_gc_gate')
 
         post_signal = tf.tanh(signal)
         post_gate = tf.sigmoid(gate)
@@ -128,7 +114,7 @@ class WaveNet(object):
         return z 
 
 
-    def chan_reduce(self, prev_op):
+    def _chan_reduce(self, prev_op):
         sig_shape = [1, self.n_dil_chan, self.n_res_chan]
         skip_shape = [1, self.n_dil_chan, self.n_skip_chan]
         with tf.name_scope('signal_%i_to_%i' % (sig_shape[1], sig_shape[2])):
@@ -145,7 +131,7 @@ class WaveNet(object):
 
         return signal, skip 
 
-    def postprocess(self, prev_op):
+    def _postprocess(self, prev_op):
         '''implement the post-processing, just after the '+' sign and
         before the 'ReLU', where all skip connections add together.
         see section 2.4'''
@@ -167,15 +153,42 @@ class WaveNet(object):
 
         self.filters.append(filt1)
         self.filters.append(filt2)
-        return softmax
+        return dense2, softmax
 
 
-    def create_graph(self):
-        '''main wavenet structure'''
+    def _loss_fcn(self, wav_input, id_mask, net_logits_out, l2_factor):
+        '''calculates cross-entropy loss with l2 regularization'''
+        with tf.name_scope('loss'):
+            shift_input = wav_input[:,1:,:]
+            cross_ent = tf.nn.softmax_cross_entropy_with_logits_v2(
+                    labels = shift_input,
+                    logits = net_logits_out)
+            use_mask = tf.cast(tf.not_equal(id_mask[:,1:], 0), tf.float32)
+            cross_ent_filt = cross_ent * use_mask 
+            mean_cross_ent = tf.reduce_mean(cross_ent_filt)
+            if l2_factor != 0:
+                l2_loss = tf.add_n([tf.nn.l2_loss(v)
+                    for v in tf.trainable_variables()
+                    if not ('bias' in v.name)])
+            else:
+                l2_loss = 0
+            total_loss = mean_cross_ent + l2_factor * l2_loss
 
-        graph = tf.Graph()
+        return total_loss
+
+
+
+    def create_training_graph(self, wav_input, id_mask, id_map):
+        '''creates the training graph and returns the loss node for the graph.
+        the inputs to this function are data.Dataset.iterator.get_next() operations.
+        This graph performs the forward calculation in parallel across
+        a slice of time steps.  The loss compares these calculations with
+        the next input value.'''
+
+        # use the same graph as the input
+        graph = wav_input.graph 
         with graph.as_default():
-            cur = self.preprocess()
+            cur = self._preprocess(wav_input, id_map)
             skip = []
 
             for b in range(self.n_blocks):
@@ -183,26 +196,18 @@ class WaveNet(object):
                     for l in range(self.n_block_layers):
                         with tf.name_scope('layer%i' % (l + 1)):
                             dil = 2**l
-                            dil_conv_op = self.dilated_conv(cur, dil, self.batch_sz)
-                            (signal_op, skip_op) = self.chan_reduce(dil_conv_op)
+                            dil_conv_op = self._dilated_conv(cur, dil,
+                                    id_mask, self.batch_sz)
+                            (signal_op, skip_op) = self._chan_reduce(dil_conv_op)
                             skip.append(skip_op)
                             cur = tf.add(cur, signal_op, name='residual_add') 
-            sum_all = sum(skip)
-            out = self.postprocess(sum_all)
             self.saved_init = tf.variables_initializer(self.saved, 'saved_init')
             self.filters_init = tf.variables_initializer(self.filters, 'filters_init')
-        self.output = out 
-        return graph
 
+            sum_all = sum(skip)
+            (logits, softmax_out) = self._postprocess(sum_all)
+            loss = self._loss_fcn(wav_input, id_mask, logits, self.l2_factor)
 
-    def predict(self, sess, wave, beg, end):
-        '''calculate top-level convolutions of a subrange of wave.
-        if _is_first_run, previous state is re-initialized'''
-        wave_window = wave[:,beg:end,:]
+        return loss 
 
-        ret = sess.run(self.output, 
-                feed_dict = {
-                    self.raw_input: wave_window
-                    })
-        return ret
 

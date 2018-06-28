@@ -41,10 +41,10 @@ def gen_wav_files(path_itr, sample_rate, sess):
     '''consume an iterator that yields [voice_id, wav_path].
     load the .wav file contents into a vector and return a tuple
     '''
-    ne = path_itr.get_next()
+    next_el = path_itr.get_next()
     while True:
         try:
-            (vid, wav_path) = sess.run(ne)
+            (vid, wav_path) = sess.run(next_el)
         except tf.errors.OutOfRangeError:
             break
         wav = read_wav_file(wav_path, sample_rate)
@@ -72,13 +72,13 @@ def gen_concat_slices(wav_itr, slice_sz, recep_field_sz, sess):
     need_sz = slice_sz 
     spliced_wav = np.empty(0, np.float)
     spliced_ids = np.empty(0, np.int32)
-    ne = wav_itr.get_next()
+    next_el = wav_itr.get_next()
     zero_lead = np.full(recep_field_sz - 1, 0, np.int32)
     idmap = [0]
 
     while True:
         try:
-            (vid, wav) = sess.run(ne)
+            (vid, wav) = sess.run(next_el)
         except tf.errors.OutOfRangeError:
             break
         wav_sz = wav.shape[0] 
@@ -127,14 +127,16 @@ def wav_dataset(sam_path, slice_sz, batch_sz, recep_field_sz, sample_rate, sess)
     labeled slices from it'''
     zero_d = tf.TensorShape([])
     one_d = tf.TensorShape([None])
-    d1 = tf.data.Dataset.from_generator(lambda: gen_sample_map(sam_path),
+    d1 = tf.data.Dataset.from_generator(
+            lambda: gen_sample_map(sam_path),
             (tf.int32, tf.string),
             (zero_d, zero_d))
 
     d2 = d1 # do shuffling and repetition here
     i2 = d2.make_one_shot_iterator()
 
-    d3 = tf.data.Dataset.from_generator(lambda: gen_wav_files(i2, sample_rate, sess),
+    d3 = tf.data.Dataset.from_generator(
+            lambda: gen_wav_files(i2, sample_rate, sess),
             (tf.int32, tf.float32), (zero_d, one_d))
     i3 = d3.make_one_shot_iterator()
 
@@ -142,11 +144,7 @@ def wav_dataset(sam_path, slice_sz, batch_sz, recep_field_sz, sample_rate, sess)
             lambda: gen_concat_slices(i3, slice_sz, recep_field_sz, sess),
             (tf.float32, tf.int32, tf.int32), (one_d, one_d, one_d))
 
-    slice_ne = [d4.make_one_shot_iterator().get_next()] * batch_sz
-    def next_slice():
-        return sess.run(slice_ne)
+    slice_next_elems = [d4.make_one_shot_iterator().get_next()] * batch_sz
+    return i3
+    #return [tf.stack([s[i] for s in slice_next_elems]) for i in range(3)]
 
-    return next_slice 
-
-
-def 

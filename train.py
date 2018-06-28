@@ -1,0 +1,4 @@
+# training functions
+import  
+
+def 
