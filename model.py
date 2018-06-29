@@ -48,19 +48,24 @@ class WaveNet(object):
     def get_recep_field_sz(self):
         return self.n_blocks * sum([2**l for l in range(self.n_block_layers)])
 
+    def encode_input_onehot(self, wav_input):
+        with tf.name_scope('encode'):
+            wav_input_mu = mu_encode(wav_input, self.n_quant_chan)
+            # wav_input_onehot[b][t][i], batch b, time t, category i
+            wav_input_onehot = tf.one_hot(wav_input_mu, self.n_quant_chan, axis = -1,
+                    name = 'one_hot_input')
+        return wav_input_onehot
 
-
-    def _preprocess(self, wav_input, id_map):
-        '''entry point of data coming from data.Dataset.'''  
+    def _preprocess(self, wav_input_encoded, id_map):
+        '''entry point of data coming from data.Dataset.
+        wav_input[b][t] for batch b, time t'''  
         filter_shape = [1, self.n_quant_chan, self.n_res_chan]
 
         with tf.name_scope('config_inputs'):
-            self.batch_sz = tf.shape(wav_input)[0]
+            self.batch_sz = tf.shape(wav_input_encoded)[0]
 
         with tf.name_scope('preprocess'):
             filt = create_var('in_filter', filter_shape)
-            wav_input_mu = mu_encode(wav_input, self.n_quant_chan)
-            wav_input_onehot = tf.one_hot(wav_input_mu, self.n_quant_chan, axis = 1)
 
             if self.use_gc:
                 self.gc_tab = create_var('gc_tab',
@@ -68,7 +73,7 @@ class WaveNet(object):
                 self.filters.append(self.gc_tab)
                 # gc_embeds[batch][i] = embedding vector
                 self.gc_embeds = tf.nn.embedding_lookup(self.gc_tab, id_map)
-            pre_op = tf.nn.convolution(wav_input_onehot, filt,
+            pre_op = tf.nn.convolution(wav_input_encoded, filt,
                     'VALID', [1], [1], 'in_conv')
 
         self.filters.append(filt)
@@ -164,25 +169,32 @@ class WaveNet(object):
         return dense2, softmax
 
 
-    def _loss_fcn(self, wav_input, id_mask, net_logits_out, l2_factor):
+    def _loss_fcn(self, wav_input_encoded, id_mask, net_logits_out, l2_factor):
         '''calculates cross-entropy loss with l2 regularization'''
         with tf.name_scope('loss'):
-            shift_input = wav_input[:,1:,:]
+            shift_input = wav_input_encoded[:,1:,:]
             cross_ent = tf.nn.softmax_cross_entropy_with_logits_v2(
                     labels = shift_input,
                     logits = net_logits_out)
             use_mask = tf.cast(tf.not_equal(id_mask[:,1:], 0), tf.float32)
             cross_ent_filt = cross_ent * use_mask 
             mean_cross_ent = tf.reduce_mean(cross_ent_filt)
-            if l2_factor != 0:
-                l2_loss = tf.add_n([tf.nn.l2_loss(v)
-                    for v in tf.trainable_variables()
-                    if not ('bias' in v.name)])
-            else:
-                l2_loss = 0
+            with tf.name_scope('regularization'):
+                if l2_factor != 0:
+                    l2_loss = tf.add_n([tf.nn.l2_loss(v)
+                        for v in tf.trainable_variables()
+                        if not ('bias' in v.name)])
+                else:
+                    l2_loss = 0
             total_loss = mean_cross_ent + l2_factor * l2_loss
 
         return total_loss
+
+    def initialize_training_graph(sess):
+        sess.run([
+            tf.variables_initializer(self.saved),
+            tf.variables_initializer(self.filters)
+            ])
 
 
 
@@ -196,7 +208,8 @@ class WaveNet(object):
         # use the same graph as the input
         graph = wav_input.graph 
         with graph.as_default():
-            cur = self._preprocess(wav_input, id_map)
+            encoded_input = self.encode_input_onehot(wav_input)
+            cur = self._preprocess(encoded_input, id_map)
             skip = []
 
             for b in range(self.n_blocks):
@@ -209,13 +222,10 @@ class WaveNet(object):
                             (signal_op, skip_op) = self._chan_reduce(dil_conv_op)
                             skip.append(skip_op)
                             cur = tf.add(cur, signal_op, name='residual_add') 
-            self.saved_init = tf.variables_initializer(self.saved, 'saved_init')
-            self.filters_init = tf.variables_initializer(self.filters, 'filters_init')
 
             sum_all = sum(skip)
             (logits, softmax_out) = self._postprocess(sum_all)
-            loss = self._loss_fcn(wav_input, id_mask, logits, self.l2_factor)
+            loss = self._loss_fcn(encoded_input, id_mask, logits, self.l2_factor)
 
         return loss 
-
 
