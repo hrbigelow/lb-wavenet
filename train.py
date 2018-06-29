@@ -6,18 +6,19 @@ import tensorflow as tf
 def main():
 
     n_blocks = 3
-    n_block_layers = 10
-    n_quant_chan = 256
-    n_res_chan = 32
-    n_dil_chan = 16
-    n_skip_chan = 32
-    n_post1_chan = 100
-    n_gc_embed_chan = 100
+    n_block_layers = 4 
+    n_quant_chan = 25
+    n_res_chan = 3
+    n_dil_chan = 5 
+    n_skip_chan = 7 
+    n_post1_chan = 10
+    n_gc_embed_chan = 0
+    #n_gc_embed_chan = 17 
     n_gc_category = 450
     l2_factor = 0.1
     sam_path = 'samples.rdb'
-    slice_sz = 1000
-    batch_sz = 16
+    slice_sz = 100
+    batch_sz = 5 
     sample_rate = 16000
 
     net = model.WaveNet(
@@ -32,9 +33,12 @@ def main():
     dset.init_sample_catalog()
 
     sess = tf.Session()
-    (wav_input, id_mask, id_map) = dset.wav_dataset(sess)
+    (wav_input, id_masks, id_maps) = dset.wav_dataset(sess)
+    print('Created dataset.')
 
-    loss = net.create_training_graph(wav_input, id_mask, id_map)
+    loss = net.create_training_graph(wav_input, id_masks, id_maps)
+    print('Created training graph.')
+
     optimizer = tf.train.AdamOptimizer()
     train_vars = tf.trainable_variables()
 
@@ -43,10 +47,19 @@ def main():
     grads_and_vars = optimizer.compute_gradients(loss, train_vars)
     apply_grads = optimizer.apply_gradients(grads_and_vars, global_step)
 
-    net.initialize_training_graph(sess) 
 
+    init = tf.global_variables_initializer()
+    sess.run(init)
+
+    net.initialize_training_graph(sess) 
+    print('Initialized training graph.')
+    sess.run(global_step.initializer)
+
+    print('Starting training')
     while True:
-        sess.run(apply_grads)
+        _, step = sess.run([apply_grads, global_step])
+        print('step ', step)
+        
 
 
 if __name__ == '__main__':

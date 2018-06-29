@@ -74,16 +74,15 @@ class MaskedSliceWav(object):
         return
 
 
-    def _gen_concat_slices(wav_itr, sess):
+    def _gen_concat_slices(self, wav_itr, sess):
         '''generates slices from a virtually concatenated set of .wav files.
         consume itr, which yields [voice_id, wav_data]
 
         concatenate slices of self.slice_sz, yielding 
-        (int32 [slice_sz], float32 [slice_sz])
         where:
-        out[0][t] = wav_val
-        out[1][t] = mid 
-        out[2][mid] = vid
+        wav[t] = wav_val
+        ids[t] = mid 
+        idmap[mid] = vid
 
         vid is the voice id of the speaker.  mid is the mapping id used for this
         slice.
@@ -95,7 +94,7 @@ class MaskedSliceWav(object):
         spliced_wav = np.empty(0, np.float)
         spliced_ids = np.empty(0, np.int32)
         next_el = wav_itr.get_next()
-        zero_lead = np.full(recep_field_sz - 1, 0, np.int32)
+        recep_bound = self.recep_field_sz - 1
         idmap = [0]
 
         while True:
@@ -104,10 +103,10 @@ class MaskedSliceWav(object):
             except tf.errors.OutOfRangeError:
                 break
             wav_sz = wav.shape[0] 
-            if wav_sz < recep_field_sz:
+            if wav_sz < self.recep_field_sz:
                 printf('Warning: skipping length %i wav file (voice id %i).  '
                         + 'Shorter than receptive field size of %i\n' 
-                        % (wav_sz, vid, recep_field_sz))
+                        % (wav_sz, vid, self.recep_field_sz))
                 continue
             try:
                 mid = idmap.index(vid)
@@ -115,12 +114,13 @@ class MaskedSliceWav(object):
                 idmap += vid
                 mid = len(idmap) - 1
 
-            slice_hi_bound = min(need_sz, wav_sz)
-            slice_lo_bound = max(need_sz, recep_field_sz - 1)
+            slice_bound = min(need_sz, wav_sz)
+            mid_bound = max(recep_bound, slice_bound)
+            
             ids = np.concatenate([
-                zero_lead, 
-                np.full(slice_hi_bound - slice_lo_bound, mid, np.int32), 
-                np.full(wav_sz - slice_hi_bound, 1, np.int32)
+                np.full(recep_bound, 0, np.int32),
+                np.full(mid_bound - recep_bound, mid, np.int32), 
+                np.full(wav_sz - mid_bound, 1, np.int32)
                 ])
 
             cur_item_pos = 0
@@ -172,8 +172,10 @@ class MaskedSliceWav(object):
                         (tf.float32, tf.int32, tf.int32), (one_d, one_d, one_d))
 
             with tf.name_scope('batching'):
-                slice_next_elems = [d4.make_one_shot_iterator().get_next()] * self.batch_sz
-                stack = [tf.stack([s[i] for s in slice_next_elems]) for i in range(3)]
+                slices = [d4.make_one_shot_iterator().get_next()] * self.batch_sz
+                wav = tf.stack([s[0] for s in slices])
+                ids = [s[1] for s in slices]
+                id_maps = [s[2] for s in slices]
 
-        return stack
+        return [wav, ids, id_maps] 
 

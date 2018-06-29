@@ -56,7 +56,7 @@ class WaveNet(object):
                     name = 'one_hot_input')
         return wav_input_onehot
 
-    def _preprocess(self, wav_input_encoded, id_map):
+    def _preprocess(self, wav_input_encoded, id_maps):
         '''entry point of data coming from data.Dataset.
         wav_input[b][t] for batch b, time t'''  
         filter_shape = [1, self.n_quant_chan, self.n_res_chan]
@@ -72,15 +72,29 @@ class WaveNet(object):
                         [self.n_gc_category, self.n_gc_embed_chan])
                 self.filters.append(self.gc_tab)
                 # gc_embeds[batch][i] = embedding vector
-                self.gc_embeds = tf.nn.embedding_lookup(self.gc_tab, id_map)
+                self.gc_embeds = [
+                        tf.nn.embedding_lookup(self.gc_tab, m) for m in id_maps
+                        ]
             pre_op = tf.nn.convolution(wav_input_encoded, filt,
                     'VALID', [1], [1], 'in_conv')
 
         self.filters.append(filt)
         return pre_op
 
+    def _map_embeds(self, id_masks, proj_filt, conv_name):
+        '''create the batched, mapped, projected embedding.
+        returns shape [batch_sz, t, n_chan]'''
+        proj_embeds = [
+                tf.nn.convolution(tf.expand_dims(emb, 0),
+                    proj_filt, 'VALID', [1], [1], conv_name)
+                for emb in self.gc_embeds]
+        gathered = [
+                tf.gather(proj_emb[0], mask)
+                for proj_emb, mask in zip(proj_embeds, id_masks)]
+        return tf.stack(gathered)
+
     
-    def _dilated_conv(self, prev_op, dilation, id_mask, batch_sz): 
+    def _dilated_conv(self, prev_op, dilation, id_masks, batch_sz): 
         '''construct one dilated, gated convolution as in equation 2 of WaveNet Sept 2016'''
     
         # save last postiions from prev_op
@@ -109,9 +123,7 @@ class WaveNet(object):
                     gc_conv_shape = [1, self.n_gc_embed_chan, self.n_dil_chan]
                     gc_filt = create_var('filter', gc_conv_shape) 
                     self.filters.append(gc_filt)
-                    gc_proj_embeds = tf.nn.convolution(self.gc_embeds, gc_filt,
-                            'VALID', [1], [1], 'gc_proj_embeds')
-                    gc[part] = tf.gather(gc_proj_embeds, id_mask)
+                    gc[part] = self._map_embeds(id_masks, gc_filt, 'gc_proj_embed')
         
         (signal, gate) = (v['signal'], v['gate'])
         if self.use_gc:
@@ -169,13 +181,14 @@ class WaveNet(object):
         return dense2, softmax
 
 
-    def _loss_fcn(self, wav_input_encoded, id_mask, net_logits_out, l2_factor):
+    def _loss_fcn(self, wav_input_encoded, id_masks, net_logits_out, l2_factor):
         '''calculates cross-entropy loss with l2 regularization'''
         with tf.name_scope('loss'):
             shift_input = wav_input_encoded[:,1:,:]
             cross_ent = tf.nn.softmax_cross_entropy_with_logits_v2(
                     labels = shift_input,
                     logits = net_logits_out)
+            id_mask = tf.stack(id_masks)
             use_mask = tf.cast(tf.not_equal(id_mask[:,1:], 0), tf.float32)
             cross_ent_filt = cross_ent * use_mask 
             mean_cross_ent = tf.reduce_mean(cross_ent_filt)
@@ -190,7 +203,7 @@ class WaveNet(object):
 
         return total_loss
 
-    def initialize_training_graph(sess):
+    def initialize_training_graph(self, sess):
         sess.run([
             tf.variables_initializer(self.saved),
             tf.variables_initializer(self.filters)
@@ -198,7 +211,7 @@ class WaveNet(object):
 
 
 
-    def create_training_graph(self, wav_input, id_mask, id_map):
+    def create_training_graph(self, wav_input, id_masks, id_maps):
         '''creates the training graph and returns the loss node for the graph.
         the inputs to this function are data.Dataset.iterator.get_next() operations.
         This graph performs the forward calculation in parallel across
@@ -209,7 +222,7 @@ class WaveNet(object):
         graph = wav_input.graph 
         with graph.as_default():
             encoded_input = self.encode_input_onehot(wav_input)
-            cur = self._preprocess(encoded_input, id_map)
+            cur = self._preprocess(encoded_input, id_maps)
             skip = []
 
             for b in range(self.n_blocks):
@@ -218,14 +231,14 @@ class WaveNet(object):
                         with tf.name_scope('layer%i' % (l + 1)):
                             dil = 2**l
                             dil_conv_op = self._dilated_conv(cur, dil,
-                                    id_mask, self.batch_sz)
+                                    id_masks, self.batch_sz)
                             (signal_op, skip_op) = self._chan_reduce(dil_conv_op)
                             skip.append(skip_op)
                             cur = tf.add(cur, signal_op, name='residual_add') 
 
             sum_all = sum(skip)
             (logits, softmax_out) = self._postprocess(sum_all)
-            loss = self._loss_fcn(encoded_input, id_mask, logits, self.l2_factor)
+            loss = self._loss_fcn(encoded_input, id_masks, logits, self.l2_factor)
 
         return loss 
 
