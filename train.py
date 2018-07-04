@@ -6,15 +6,15 @@ import tensorflow as tf
 def main():
 
     n_blocks = 3
-    n_block_layers = 4 
-    n_quant_chan = 25
-    n_res_chan = 3
-    n_dil_chan = 5 
-    n_skip_chan = 7 
-    n_post1_chan = 10
-    n_gc_embed_chan = 0
-    #n_gc_embed_chan = 17 
-    n_gc_category = 450
+    n_block_layers = 10 
+    n_quant_chan = 256 
+    n_res_chan = 16 
+    n_dil_chan = 32 
+    n_skip_chan = 16 
+    n_post1_chan = 512 
+    #n_gc_embed_chan = 0
+    n_gc_embed_chan = 17 
+    n_gc_category = 377 
     l2_factor = 0.1
     sam_path = 'samples.rdb'
     slice_sz = 100
@@ -57,8 +57,8 @@ def main():
 
     print('Starting training')
     while True:
-        _, step = sess.run([apply_grads, global_step])
-        print('step ', step)
+        _, step, loss_val = sess.run([apply_grads, global_step, loss])
+        print('step, loss: {}\t{}'.format(step, loss_val))
         
 
 

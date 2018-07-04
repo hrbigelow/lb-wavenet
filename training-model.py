@@ -181,13 +181,15 @@ class WaveNet(object):
         return dense2, softmax
 
 
-    def _loss_fcn(self, wav_input_encoded, id_masks, net_logits_out, l2_factor):
+    def _loss_fcn(self, wav_input_encoded, logits_out, id_masks, l2_factor):
         '''calculates cross-entropy loss with l2 regularization'''
         with tf.name_scope('loss'):
             shift_input = wav_input_encoded[:,1:,:]
+            logits_out_clip = logits_out[:,:-1,:]
+
             cross_ent = tf.nn.softmax_cross_entropy_with_logits_v2(
                     labels = shift_input,
-                    logits = net_logits_out)
+                    logits = logits_out_clip)
             id_mask = tf.stack(id_masks)
             use_mask = tf.cast(tf.not_equal(id_mask[:,1:], 0), tf.float32)
             cross_ent_filt = cross_ent * use_mask 
@@ -238,7 +240,7 @@ class WaveNet(object):
 
             sum_all = sum(skip)
             (logits, softmax_out) = self._postprocess(sum_all)
-            loss = self._loss_fcn(encoded_input, id_masks, logits, self.l2_factor)
+            loss = self._loss_fcn(encoded_input, logits, id_masks, self.l2_factor)
 
         return loss 
 
