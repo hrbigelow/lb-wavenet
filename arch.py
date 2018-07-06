@@ -1,9 +1,20 @@
 import tensorflow as tf
+from enum import Enum
+
 
 def create_var(shape, name=None):
     initializer = tf.contrib.layers.xavier_initializer_conv2d()
     variable = tf.Variable(initializer(shape=shape), name=name)
     return variable
+
+
+class ArchCat(Enum):
+    SIGNAL = 's'
+    GATE = 'g'
+    SKIP = 'k'
+    RESIDUAL = 'r'
+    PRE = 'x'
+    POST = 'y'
 
 
 class WaveNetArch(object):
@@ -69,36 +80,47 @@ class WaveNetArch(object):
                 'ED': [1, self.n_gc_embed, self.n_dil]
                 }
 
-        self.vars['QR'] = create_var(shape['QR'])
-        if self.use_gc:
-            self.vars['GE'] = create_var(shape['GE'])
+        # create all non-layer-based variables 
+        def _make_var(channel_code, arch_cat):
+            self.vars[arch_cat.value + channel_code] \
+                = create_var(shape[channel_code])
 
-        def _make_shape(shape):
-            return [[create_var(shape)
+        _make_var('QR', ArchCat.PRE)
+        _make_var('SP', ArchCat.POST)
+        _make_var('PQ', ArchCat.POST)
+
+        if self.use_gc:
+            _make_var('GE', ArchCat.PRE)
+        
+        # create all layer-based variables
+        def _make_var_grid(channel_code, arch_cat):
+            self.vars[arch_cat.value + channel_code] \
+                = [[create_var(shape[channel_code])
             for _ in range(self.n_block_layers)]
             for _ in range(self.n_blocks)]
 
-        keys = ['sRD', 'gRD', 'DR', 'DS']
+        codes = ['RD', 'RD', 'DR', 'DS']
+        archs = [ArchCat.SIGNAL, ArchCat.GATE, ArchCat.RESIDUAL, ArchCat.SKIP]
         if self.use_gc:
-            keys += ['sED', 'gED']
+            codes += ['ED', 'ED']
+            archs += [ArchCat.SIGNAL, ArchCat.GATE]
 
-        for key in keys 
-            self.vars[key] = _make_shape(shape[key])
+        for (code, arch) in zip(codes, archs): 
+            _make_var_grid(code, arch)
 
-        self.vars['SP'] = create_var(shape['SP'])
-        self.vars['PQ'] = create_var(shape['PQ'])
+        
 
-
-
-    def get_var(self, part, block=0, layer=0):
+    def get_var(self, channel_code, arch_cat, block=0, layer=0):
         '''retrieve a variable from the model.
         Args:
-        part: one of: QR, GE, sRD, gRD, sED, gED, DR, DS, SP, PQ
+        channel_code: QR, GE, RD, ED, DR, DS, SP, PQ
+        arch_cat: ArchCat 
         block: integer (>= 0)
         layer: integer (>= 0)
         block and layer are ignored for QR, GE, SP and PQ
         '''
-        item = self.vars[part]
+
+        item = self.vars[arch_cat.value + channel_code]
         if isinstance(item, list):
             return item[block][layer]
         else:
