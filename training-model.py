@@ -1,4 +1,5 @@
 import tensorflow as tf
+import base-model as base 
 
 
 def mu_encode(x, n_quanta):
@@ -10,39 +11,32 @@ def mu_encode(x, n_quanta):
 
 
 
-def create_var(name, shape):
-    initializer = tf.contrib.layers.xavier_initializer_conv2d()
-    variable = tf.Variable(initializer(shape=shape), name=name)
-    return variable
-
-
-
-class WaveNet(object):
+class WaveNetTrain(base.WaveNetArch):
 
     def __init__(self,
             n_blocks,
             n_block_layers,
-            n_quant_chan,
-            n_res_chan,
-            n_dil_chan,
-            n_skip_chan,
-            n_post1_chan,
-            n_gc_embed_chan,
+            n_quant,
+            n_res,
+            n_dil,
+            n_skip,
+            n_post1,
+            n_gc_embed,
             n_gc_category,
             l2_factor):
 
-        self.n_blocks = n_blocks
-        self.n_block_layers = n_block_layers
-        self.n_quant_chan = n_quant_chan
-        self.n_res_chan = n_res_chan
-        self.n_dil_chan = n_dil_chan
-        self.n_skip_chan = n_skip_chan
-        self.n_post1_chan = n_post1_chan
-        self.n_gc_embed_chan = n_gc_embed_chan
-        self.n_gc_category = n_gc_category
-        self.use_gc = n_gc_embed_chan > 0
+        super().__init__(self,
+            n_blocks,
+            n_block_layers,
+            n_quant,
+            n_res,
+            n_dil,
+            n_skip,
+            n_post1,
+            n_gc_embed,
+            n_gc_category)
+
         self.l2_factor = l2_factor
-        self.filters = []
         self.saved = []
         
     def get_recep_field_sz(self):
@@ -59,26 +53,18 @@ class WaveNet(object):
     def _preprocess(self, wav_input_encoded, id_maps):
         '''entry point of data coming from data.Dataset.
         wav_input[b][t] for batch b, time t'''  
-        filter_shape = [1, self.n_quant_chan, self.n_res_chan]
-
         with tf.name_scope('config_inputs'):
             self.batch_sz = tf.shape(wav_input_encoded)[0]
 
         with tf.name_scope('preprocess'):
-            filt = create_var('in_filter', filter_shape)
-
             if self.use_gc:
-                self.gc_tab = create_var('gc_tab',
-                        [self.n_gc_category, self.n_gc_embed_chan])
-                self.filters.append(self.gc_tab)
                 # gc_embeds[batch][i] = embedding vector
-                self.gc_embeds = [
-                        tf.nn.embedding_lookup(self.gc_tab, m) for m in id_maps
-                        ]
+                gc_tab = self.get_var('GE')
+                self.gc_embeds = [tf.nn.embedding_lookup(gc_tab, m) for m in id_maps]
+
+            filt = self.get_var('QR')
             pre_op = tf.nn.convolution(wav_input_encoded, filt,
                     'VALID', [1], [1], 'in_conv')
-
-        self.filters.append(filt)
         return pre_op
 
     def _map_embeds(self, id_masks, proj_filt, conv_name):
