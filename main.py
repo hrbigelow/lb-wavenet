@@ -1,32 +1,35 @@
 # training functions
-import model
+import tmodel
+import arch
 import data
 import tensorflow as tf
 
+n_blocks = 3
+n_block_layers = 4 
+n_quant_chan = 256 
+n_res_chan = 16 
+n_dil_chan = 32 
+n_skip_chan = 16 
+n_post1_chan = 512 
+#n_gc_embed_chan = 0
+n_gc_embed_chan = 17 
+n_gc_category = 377 
+l2_factor = 0.1
+sam_path = 'samples.rdb'
+slice_sz = 100
+batch_sz = 5 
+sample_rate = 16000
+
+
 def main():
 
-    n_blocks = 3
-    n_block_layers = 10 
-    n_quant_chan = 256 
-    n_res_chan = 16 
-    n_dil_chan = 32 
-    n_skip_chan = 16 
-    n_post1_chan = 512 
-    #n_gc_embed_chan = 0
-    n_gc_embed_chan = 17 
-    n_gc_category = 377 
-    l2_factor = 0.1
-    sam_path = 'samples.rdb'
-    slice_sz = 100
-    batch_sz = 5 
-    sample_rate = 16000
-
-    net = model.WaveNet(
+    net = tmodel.WaveNetTrain(
             n_blocks, n_block_layers, n_quant_chan,
             n_res_chan, n_dil_chan, n_skip_chan,
             n_post1_chan, n_gc_embed_chan, n_gc_category,
             l2_factor
             )
+    net.create_vars()
     recep_field_sz = net.get_recep_field_sz()
 
     dset = data.MaskedSliceWav(sam_path, batch_sz, sample_rate, slice_sz, recep_field_sz)
@@ -43,7 +46,7 @@ def main():
     train_vars = tf.trainable_variables()
 
     # writing this out explicitly for educational purposes
-    global_step = tf.Variable(0)
+    global_step = tf.Variable(0, trainable=False)
     grads_and_vars = optimizer.compute_gradients(loss, train_vars)
     apply_grads = optimizer.apply_gradients(grads_and_vars, global_step)
 

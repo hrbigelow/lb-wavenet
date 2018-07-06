@@ -2,11 +2,6 @@ import tensorflow as tf
 from enum import Enum
 
 
-def create_var(shape, name=None):
-    initializer = tf.contrib.layers.xavier_initializer_conv2d()
-    variable = tf.Variable(initializer(shape=shape), name=name)
-    return variable
-
 
 class ArchCat(Enum):
     SIGNAL = 's'
@@ -15,6 +10,13 @@ class ArchCat(Enum):
     RESIDUAL = 'r'
     PRE = 'x'
     POST = 'y'
+
+
+def _make_key(channel_code, arch_cat, block=None, layer=None):
+    if block is None and layer is None:
+        return '{}{}'.format(arch_cat.value, channel_code)
+    else:
+        return '{}{}_{}_{}'.format(arch_cat.value, channel_code, block, layer)
 
 
 class WaveNetArch(object):
@@ -45,6 +47,7 @@ class WaveNetArch(object):
         self.n_gc_category = n_gc_category
         self.use_gc = n_gc_embed > 0
         self.vars = {} 
+        self.var_init_func = tf.contrib.layers.xavier_initializer_conv2d()
 
 
     def create_vars(self):
@@ -80,10 +83,10 @@ class WaveNetArch(object):
                 'ED': [1, self.n_gc_embed, self.n_dil]
                 }
 
-        # create all non-layer-based variables 
-        def _make_var(channel_code, arch_cat):
-            self.vars[arch_cat.value + channel_code] \
-                = create_var(shape[channel_code])
+
+        def _make_var(channel_code, arch_cat, block=None, layer=None):
+            var = tf.Variable(self.var_init_func(shape=shape[channel_code]))
+            self.vars[_make_key(channel_code, arch_cat, block, layer)] = var
 
         _make_var('QR', ArchCat.PRE)
         _make_var('SP', ArchCat.POST)
@@ -94,10 +97,9 @@ class WaveNetArch(object):
         
         # create all layer-based variables
         def _make_var_grid(channel_code, arch_cat):
-            self.vars[arch_cat.value + channel_code] \
-                = [[create_var(shape[channel_code])
-            for _ in range(self.n_block_layers)]
-            for _ in range(self.n_blocks)]
+            for b in range(self.n_blocks):
+                for l in range(self.n_block_layers):
+                    _make_var(channel_code, arch_cat, b, l)
 
         codes = ['RD', 'RD', 'DR', 'DS']
         archs = [ArchCat.SIGNAL, ArchCat.GATE, ArchCat.RESIDUAL, ArchCat.SKIP]
@@ -108,23 +110,21 @@ class WaveNetArch(object):
         for (code, arch) in zip(codes, archs): 
             _make_var_grid(code, arch)
 
+        # Create the initializer
+        self.var_init_op = tf.variables_initializer(list(self.vars.values()))
         
 
-    def get_var(self, channel_code, arch_cat, block=0, layer=0):
+    def get_var(self, channel_code, arch_cat, block=None, layer=None):
         '''retrieve a variable from the model.
         Args:
         channel_code: QR, GE, RD, ED, DR, DS, SP, PQ
         arch_cat: ArchCat 
-        block: integer (>= 0)
-        layer: integer (>= 0)
         block and layer are ignored for QR, GE, SP and PQ
         '''
+        key = _make_key(channel_code, arch_cat, block, layer)
+        item = self.vars[key]
+        return item
 
-        item = self.vars[arch_cat.value + channel_code]
-        if isinstance(item, list):
-            return item[block][layer]
-        else:
-            return item
 
 
 

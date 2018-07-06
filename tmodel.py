@@ -11,7 +11,7 @@ def mu_encode(x, n_quanta):
 
 
 
-class WaveNetTrain(base.WaveNetArch):
+class WaveNetTrain(ar.WaveNetArch):
 
     def __init__(self,
             n_blocks,
@@ -25,16 +25,16 @@ class WaveNetTrain(base.WaveNetArch):
             n_gc_category,
             l2_factor):
 
-        super().__init__(self,
-            n_blocks,
-            n_block_layers,
-            n_quant,
-            n_res,
-            n_dil,
-            n_skip,
-            n_post1,
-            n_gc_embed,
-            n_gc_category)
+        super().__init__(
+                n_blocks,
+                n_block_layers,
+                n_quant,
+                n_res,
+                n_dil,
+                n_skip,
+                n_post1,
+                n_gc_embed,
+                n_gc_category)
 
         self.l2_factor = l2_factor
         self.saved = []
@@ -44,9 +44,9 @@ class WaveNetTrain(base.WaveNetArch):
 
     def encode_input_onehot(self, wav_input):
         with tf.name_scope('encode'):
-            wav_input_mu = mu_encode(wav_input, self.n_quant_chan)
+            wav_input_mu = mu_encode(wav_input, self.n_quant)
             # wav_input_onehot[b][t][i], batch b, time t, category i
-            wav_input_onehot = tf.one_hot(wav_input_mu, self.n_quant_chan, axis = -1,
+            wav_input_onehot = tf.one_hot(wav_input_mu, self.n_quant, axis = -1,
                     name = 'one_hot_input')
         return wav_input_onehot
 
@@ -85,7 +85,7 @@ class WaveNetTrain(base.WaveNetArch):
     
         # save last postiions from prev_op
         with tf.name_scope('load_store_values'):
-            saved_shape = [batch_sz, dilation, self.n_res_chan]
+            saved_shape = [batch_sz, dilation, self.n_res]
             save = tf.Variable(tf.zeros(saved_shape), name='saved_length%i' % dilation,
                     validate_shape = False,
                     trainable = False)
@@ -165,10 +165,11 @@ class WaveNetTrain(base.WaveNetArch):
             use_mask = tf.cast(tf.not_equal(id_mask[:,1:], 0), tf.float32)
             cross_ent_filt = cross_ent * use_mask 
             mean_cross_ent = tf.reduce_mean(cross_ent_filt)
+            # !!! fix the 'bias' in v.name test
             with tf.name_scope('regularization'):
                 if l2_factor != 0:
                     l2_loss = tf.add_n([tf.nn.l2_loss(v)
-                        for v in tf.trainable_variables()
+                        for v in self.vars.values() 
                         if not ('bias' in v.name)])
                 else:
                     l2_loss = 0
@@ -179,7 +180,7 @@ class WaveNetTrain(base.WaveNetArch):
     def initialize_training_graph(self, sess):
         sess.run([
             tf.variables_initializer(self.saved),
-            tf.variables_initializer(self.filters)
+            self.var_init_op
             ])
 
 
@@ -203,10 +204,11 @@ class WaveNetTrain(base.WaveNetArch):
                     for l in range(self.n_block_layers):
                         with tf.name_scope('layer%i' % (l + 1)):
                             dil = 2**l
-                            dil_conv_op = self._dilated_conv(cur, dil, b, l,
+                            dil_conv_op = self._dilated_conv(
+                                    cur, dil, b, l,
                                     id_masks, self.batch_sz)
-                            (signal_op, skip_op) = 
-                            self._chan_reduce(dil_conv_op, b, l)
+                            (signal_op, skip_op) = \
+                                self._chan_reduce(dil_conv_op, b, l)
                             skip.append(skip_op)
                             cur = tf.add(cur, signal_op, name='residual_add') 
 
