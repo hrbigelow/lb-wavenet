@@ -1,27 +1,20 @@
 import tensorflow as tf
 
-i = tf.constant(2)
-n = 100
+n = 10
 a = tf.TensorArray(dtype=tf.int32, size = n, clear_after_read = False)
-
-# initial values for fibonacci sequence
 a = a.write(0, 1)
 a = a.write(1, 1)
 
-def fib(p, q):
-    return tf.add(p, q)
-
-def p(i, vals):
+def cond(i):
     return i < n
 
-def body(i, vals):
-    a = vals.read(i - 2)
-    b = vals.read(i - 1)
-    f = fib(a, b)
-    vals = vals.write(i, f)
-    return i + 1, vals
+def body(i):
+    a = a.write(i, a.read(i - 2) + a.read(i - 1))
+    return i + 1
 
 
-(ret_i, ret_a) = tf.while_loop(p, body, [i, a], back_prop = False, parallel_iterations = 1)
+ret_i = tf.while_loop(cond, body, [2])
 
+#sess = tf.Session()
+#sess.run(a.stack())
 
