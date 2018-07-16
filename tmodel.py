@@ -80,7 +80,7 @@ class WaveNetTrain(ar.WaveNetArch):
         return tf.stack(gathered)
 
     
-    def _dilated_conv(self, prev_op, dilation, block, layer, id_masks, batch_sz): 
+    def _dilated_conv(self, prev_op, dilation, id_masks, batch_sz): 
         '''construct one dilated, gated convolution as in equation 2 of WaveNet Sept 2016'''
     
         # save last postiions from prev_op
@@ -91,43 +91,36 @@ class WaveNetTrain(ar.WaveNetArch):
                     trainable = False)
             stop_grad = tf.stop_gradient(save)
             concat = tf.concat([stop_grad, prev_op], 1, name='concat')
-            assign = save.assign(concat[:,-dilation:,:])
+            aop = save.assign(concat[:,-dilation:,:])
         self.saved.append(save)
 
         # construct signal and gate logic
         v = {}
-        gc = {}
         for arch in [ar.ArchCat.SIGNAL, ar.ArchCat.GATE]:
-            filt = self.get_var('RD', arch, block, layer)
+            filt = self.get_variable(arch)
             with tf.name_scope(arch.name):
                 v[arch] = tf.nn.convolution(concat, filt, 
                         'VALID', [1], [dilation], 'dilation%i_conv' % dilation)
 
-                if self.use_gc:
-                    gc_filt = self.get_var('ED', arch, block, layer)
-                    gc[arch] = self._map_embeds(id_masks, gc_filt, 'gc_proj_embed')
-        
-        (signal, gate) = (v[ar.ArchCat.SIGNAL], v[ar.ArchCat.GATE])
         if self.use_gc:
-            signal = tf.add(signal, gc[ar.ArchCat.SIGNAL], 'add_gc_signal')
-            gate = tf.add(gate, gc[ar.ArchCat.GATE], 'add_gc_gate')
-
-        post_signal = tf.tanh(signal)
-        post_gate = tf.sigmoid(gate)
-
-        with tf.control_dependencies([assign]):
-            z = post_signal * post_gate
+            for arch in [ar.ArchCat.GC_SIGNAL, ar.ArchCat.GC_GATE]: 
+                gc_filt = self.get_variable(arch)
+                gc_proj = self._map_embeds(id_masks, gc_filt, 'gc_proj_embed')
+                v[arch] = tf.add(v[arch], gc_proj, 'add')
+        
+        with tf.control_dependencies([aop]):
+            z = tf.tanh(v[ar.ArchCat.SIGNAL]) * tf.sigmoid(v[ar.ArchCat.GATE])
                 
         return z 
 
 
-    def _chan_reduce(self, prev_op, block, layer):
-        sig_filt = self.get_var('DR', ar.ArchCat.RESIDUAL, block, layer)
-        skip_filt = self.get_var('DS', ar.ArchCat.SKIP, block, layer)
+    def _chan_reduce(self, prev_op):
+        sig_filt = self.get_variable(ar.ArchCat.RESIDUAL)
+        skp_filt = self.get_variable(ar.ArchCat.SKIP)
         with tf.name_scope('signal'):
             signal = tf.nn.convolution(prev_op, sig_filt, 'VALID', [1], [1], 'conv')
         with tf.name_scope('skip'):
-            skip = tf.nn.convolution(prev_op, skip_filt, 'VALID', [1], [1], 'conv')
+            skip = tf.nn.convolution(prev_op, skp_filt, 'VALID', [1], [1], 'conv')
         return signal, skip 
 
 
@@ -135,8 +128,8 @@ class WaveNetTrain(ar.WaveNetArch):
         '''implement the post-processing, just after the '+' sign and
         before the 'ReLU', where all skip connections add together.
         see section 2.4'''
-        post1_filt = self.get_var('SP', ar.ArchCat.POST)
-        post2_filt = self.get_var('PQ', ar.ArchCat.POST)
+        post1_filt = self.get_variable(ar.ArchCat.POST1)
+        post2_filt = self.get_variable(ar.ArchCat.POST2)
         with tf.name_scope('postprocess'):
             relu1 = tf.nn.relu(prev_op, 'ReLU')
             with tf.name_scope('chan'):
@@ -197,23 +190,20 @@ class WaveNetTrain(ar.WaveNetArch):
         with graph.as_default():
             encoded_input = self.encode_input_onehot(wav_input)
             cur = self._preprocess(encoded_input, id_maps)
-            skip = []
+            skps = []
 
             for b in range(self.n_blocks):
-                with tf.name_scope('block%i' % (b + 1)):
-                    for l in range(self.n_block_layers):
-                        with tf.name_scope('layer%i' % (l + 1)):
-                            dil = 2**l
-                            dil_conv_op = self._dilated_conv(
-                                    cur, dil, b, l,
-                                    id_masks, self.batch_sz)
-                            (signal_op, skip_op) = \
-                                self._chan_reduce(dil_conv_op, b, l)
-                            skip.append(skip_op)
-                            cur = tf.add(cur, signal_op, name='residual_add') 
+                for bl in range(self.n_block_layers):
+                    l = b * self.n_block_layers + bl
+                    dil = 2**bl
+                    with tf.variable_scope('dconv{}'.format(l), resuse=None):
+                        dconv = self._dilated_conv(cur, dil, id_masks, self.batch_sz)
+                        sig, skp = self._chan_reduce(dconv)
+                        skps.append(skip_op)
+                        cur = tf.add(cur, sig, name='residual_add') 
 
-            sum_all = sum(skip)
-            (logits, softmax_out) = self._postprocess(sum_all)
+            skp_all = sum(skps)
+            logits, softmax_out = self._postprocess(skp_all)
             loss = self._loss_fcn(encoded_input, logits, id_masks, self.l2_factor)
 
         return loss 
