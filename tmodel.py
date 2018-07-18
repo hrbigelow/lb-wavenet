@@ -59,16 +59,19 @@ class WaveNetTrain(ar.WaveNetArch):
         with tf.name_scope('preprocess'):
             if self.use_gc:
                 # gc_embeds[batch][i] = embedding vector
-                gc_tab = self.get_var('GE', ar.ArchCat.PRE)
+                gc_tab = self.get_variable(ar.ArchCat.GC_EMBED)
                 self.gc_embeds = [tf.nn.embedding_lookup(gc_tab, m) for m in id_maps]
 
-            filt = self.get_var('QR', ar.ArchCat.PRE)
+            filt = self.get_variable(ar.ArchCat.PRE)
             pre_op = tf.nn.convolution(wav_input_encoded, filt,
                     'VALID', [1], [1], 'in_conv')
         return pre_op
 
     def _map_embeds(self, id_masks, proj_filt, conv_name):
         '''create the batched, mapped, projected embedding.
+        id_masks: [batch_sz, t] = gc_id
+        proj_filt: [1, n_gc_embed, n_dil]
+        self.gc_embeds: 
         returns shape [batch_sz, t, n_chan]'''
         proj_embeds = [
                 tf.nn.convolution(tf.expand_dims(emb, 0),
@@ -96,17 +99,20 @@ class WaveNetTrain(ar.WaveNetArch):
 
         # construct signal and gate logic
         v = {}
-        for arch in [ar.ArchCat.SIGNAL, ar.ArchCat.GATE]:
+        sig_gate = [ar.ArchCat.SIGNAL, ar.ArchCat.GATE]
+        sig_gate_gc = [ar.ArchCat.GC_SIGNAL, ar.ArchCat.GC_GATE]
+
+        for arch in sig_gate:
             filt = self.get_variable(arch)
             with tf.name_scope(arch.name):
                 v[arch] = tf.nn.convolution(concat, filt, 
                         'VALID', [1], [dilation], 'dilation%i_conv' % dilation)
 
         if self.use_gc:
-            for arch in [ar.ArchCat.GC_SIGNAL, ar.ArchCat.GC_GATE]: 
-                gc_filt = self.get_variable(arch)
+            for a, g in zip(sig_gate, sig_gate_gc): 
+                gc_filt = self.get_variable(g)
                 gc_proj = self._map_embeds(id_masks, gc_filt, 'gc_proj_embed')
-                v[arch] = tf.add(v[arch], gc_proj, 'add')
+                v[a] = tf.add(v[a], gc_proj, 'add')
         
         with tf.control_dependencies([aop]):
             z = tf.tanh(v[ar.ArchCat.SIGNAL]) * tf.sigmoid(v[ar.ArchCat.GATE])
@@ -162,7 +168,7 @@ class WaveNetTrain(ar.WaveNetArch):
             with tf.name_scope('regularization'):
                 if l2_factor != 0:
                     l2_loss = tf.add_n([tf.nn.l2_loss(v)
-                        for v in self.vars.values() 
+                        for v in tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES) 
                         if not ('bias' in v.name)])
                 else:
                     l2_loss = 0
@@ -170,20 +176,16 @@ class WaveNetTrain(ar.WaveNetArch):
 
         return total_loss
 
-    def initialize_training_graph(self, sess):
-        sess.run([
-            tf.variables_initializer(self.saved),
-            self.var_init_op
-            ])
-
-
 
     def create_training_graph(self, wav_input, id_masks, id_maps):
         '''creates the training graph and returns the loss node for the graph.
         the inputs to this function are data.Dataset.iterator.get_next() operations.
         This graph performs the forward calculation in parallel across
         a slice of time steps.  The loss compares these calculations with
-        the next input value.'''
+        the next input value.
+        wav_input: list of batch_sz wav_slices
+        id_masks: list of batch_sz id_masks
+        id_maps: list of batch_sz id_maps '''
 
         # use the same graph as the input
         graph = wav_input.graph 
@@ -196,10 +198,10 @@ class WaveNetTrain(ar.WaveNetArch):
                 for bl in range(self.n_block_layers):
                     l = b * self.n_block_layers + bl
                     dil = 2**bl
-                    with tf.variable_scope('dconv{}'.format(l), resuse=None):
+                    with tf.variable_scope('dconv{}'.format(l), reuse=None):
                         dconv = self._dilated_conv(cur, dil, id_masks, self.batch_sz)
                         sig, skp = self._chan_reduce(dconv)
-                        skps.append(skip_op)
+                        skps.append(skp)
                         cur = tf.add(cur, sig, name='residual_add') 
 
             skp_all = sum(skps)

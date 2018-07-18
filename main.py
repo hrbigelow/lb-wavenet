@@ -19,6 +19,8 @@ sam_path = 'samples.rdb'
 slice_sz = 100
 batch_sz = 5 
 sample_rate = 16000
+log_dir = '/home/hrbigelow/ai/ckpt'
+file_pfx = 'wnet'
 
 
 def main():
@@ -29,7 +31,6 @@ def main():
             n_post1_chan, n_gc_embed_chan, n_gc_category,
             l2_factor
             )
-    net.create_vars()
     recep_field_sz = net.get_recep_field_sz()
 
     dset = data.MaskedSliceWav(sam_path, batch_sz, sample_rate, slice_sz, recep_field_sz)
@@ -53,15 +54,18 @@ def main():
 
     init = tf.global_variables_initializer()
     sess.run(init)
-
-    net.initialize_training_graph(sess) 
     print('Initialized training graph.')
+    input('Continue?')
+
     sess.run(global_step.initializer)
 
+    input('Continue?')
     print('Starting training')
     while True:
         _, step, loss_val = sess.run([apply_grads, global_step, loss])
         print('step, loss: {}\t{}'.format(step, loss_val))
+        if step % 100 == 0:
+            net.save(sess, log_dir, file_pfx, step)
         
 
 

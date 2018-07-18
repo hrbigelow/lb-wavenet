@@ -62,6 +62,7 @@ class MaskedSliceWav(object):
     def _gen_wav_files(self, path_itr, sess):
         '''consume an iterator that yields [voice_id, wav_path].
         load the .wav file contents into a vector and return a tuple
+        generate tuples (voice_id, [wav_val, wav_val, ...])
         '''
         next_el = path_itr.get_next()
         while True:
@@ -78,17 +79,15 @@ class MaskedSliceWav(object):
         '''generates slices from a virtually concatenated set of .wav files.
         consume itr, which yields [voice_id, wav_data]
 
-        concatenate slices of self.slice_sz, yielding 
-        where:
-        wav[t] = wav_val
-        ids[t] = mid 
-        idmap[mid] = vid
+        concatenate slices of self.slice_sz where:
+        spliced_wav[t] = wav_val
+        spliced_ids[t] = mapping_id 
+        idmap[mapping_id] = voice_id
 
-        vid is the voice id of the speaker.  mid is the mapping id used for this
-        slice.
-        
-        the special id value of zero indicates that this position is an invalid
-        training window.
+        mapping_id corresponds to voice_id for valid positions, or zero for invalid
+        (positions corresponding to junction-spanning receptive field windows)
+
+        generates (spliced_wav, spliced_ids, idmap)
         '''
         need_sz = self.slice_sz 
         spliced_wav = np.empty(0, np.float)
@@ -146,7 +145,14 @@ class MaskedSliceWav(object):
 
     def wav_dataset(self, sess):
         '''parse a sample file and create a ts.data.Dataset of concatenated,
-        labeled slices from it'''
+        labeled slices from it.
+        d1 items are (voice_id, wav_path)
+        d2 items are just d1 items shuffled and repeated
+        d3 items are (voice_id, [wav_val, wav_val, ...])
+        d4 items are (spliced_wav, spliced_ids, idmap)
+
+        returns:
+            wav: ['''
         zero_d = tf.TensorShape([])
         one_d = tf.TensorShape([None])
         with tf.name_scope('dataset'):

@@ -122,7 +122,7 @@ class WaveNetGen(ar.WaveNetArch):
         appends the populated window to the final output buffer,
         and advances all lookback buffers.
         '''
-        lb_vars = [v in tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES)
+        lb_vars = [v for v in tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES)
                 if 'lookback' in v.name]
         # copy len-chunk_sz last values to beginning
         aops = []
