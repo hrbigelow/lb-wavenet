@@ -6,15 +6,17 @@ import json
 
 sam_file = 'samples.rdb'
 log_dir = '/home/hrbigelow/ai/ckpt'
+par_dir = '/home/hrbigelow/ai/par'
 arch_file = 'arch1.json'
 par_file = 'par1.json'
+max_steps = 1000
 
 def main():
 
-    with open(arch_file, 'r') as fp:
+    with open(par_dir + '/' + arch_file, 'r') as fp:
         arch = json.load(fp)
 
-    with open(par_file, 'r') as fp:
+    with open(par_dir + '/' + par_file, 'r') as fp:
         par = json.load(fp)
 
     net = tmodel.WaveNetTrain(
@@ -66,7 +68,7 @@ def main():
 
     #input('Continue?')
     print('Starting training')
-    while True:
+    while step < max_steps:
         _, step, loss_val = sess.run([apply_grads, global_step, loss])
         print('step, loss: {}\t{}'.format(step, loss_val))
         if step % 100 == 0:

@@ -31,16 +31,16 @@ class WaveNetGen(ar.WaveNetArch):
         self.chunk_sz = chunk_sz
 
 
-    def _preprocess(self, prev_val):
+    def _preprocess(self, src_buf, gpos):
         '''everything done to the raw signal before it is
         ready for the layers.'''  
-        with tf.name_scope('preprocess'):
-            if self.use_gc:
-                self.gc_ids = tf.placeholder(tf.int32, [None], 'gc_ids')
-                gc_tab = self.get_variable(ar.ArchCat.GC_EMBED)
-                self.gc_embeds = tf.gather(gc_tab, self.gc_ids)
-            filt = self.get_variable(ar.ArchCat.PRE)
-            pre_op = tf.matmul(prev_val, filt[0])
+        if self.use_gc:
+            self.gc_ids = tf.placeholder(tf.int32, [None], 'gc_ids')
+            gc_tab = self.get_variable(ar.ArchCat.GC_EMBED)
+            self.gc_embeds = tf.gather(gc_tab, self.gc_ids)
+        filt = self.get_variable(ar.ArchCat.PRE)
+        pre_op = tf.matmul(src_buf[:,gpos,:], filt[0])
+
         return pre_op
 
 
@@ -50,16 +50,19 @@ class WaveNetGen(ar.WaveNetArch):
         prev_val: value from previous layer at time t 
         '''
         v = {}
-        for arch in [ar.ArchCat.SIGNAL, ar.ArchCat.GATE]:
+        sig_gate = [ar.ArchCat.SIGNAL, ar.ArchCat.GATE]
+        sig_gate_gc = [ar.ArchCat.GC_SIGNAL, ar.ArchCat.GC_GATE]
+
+        for arch in sig_gate:
             filt = self.get_variable(arch)
-            v[arch] = tf.matmul(src_buf[pos], filt[0]) \
+            v[arch] = tf.matmul(src_buf[:,pos,:], filt[0]) \
             + tf.matmul(prev_val, filt[1])
 
         if self.use_gc:
-            for arch in [ar.ArchCat.GC_SIGNAL, ar.ArchCat.GC_GATE]: 
-                gc_filt = self.get_variable(arch)
+            for a, g in zip(sig_gate, sig_gate_gc): 
+                gc_filt = self.get_variable(g)
                 gc_proj = tf.matmul(self.gc_embeds, gc_filt[0])
-                v[arch] = tf.add(v[arch], gc_proj, 'add')
+                v[a] = tf.add(v[a], gc_proj, 'add')
 
         z = tf.tanh(v[ar.ArchCat.SIGNAL]) * tf.sigmoid(v[ar.ArchCat.GATE])
         return z
@@ -71,9 +74,9 @@ class WaveNetGen(ar.WaveNetArch):
         skp_filt = self.get_variable(ar.ArchCat.SKIP)
 
         with tf.name_scope('signal'):
-            signal = tf.matmul(prev_op, sig_filt)
+            signal = tf.matmul(prev_op, sig_filt[0])
         with tf.name_scope('skip'):
-            skip = tf.matmul(prev_op, skip_filt)
+            skip = tf.matmul(prev_op, skp_filt[0])
         return signal, skip 
 
 
@@ -86,11 +89,11 @@ class WaveNetGen(ar.WaveNetArch):
         with tf.name_scope('postprocess'):
             relu1 = tf.nn.relu(prev_op, 'ReLU')
             with tf.name_scope('chan'):
-                dense1 = tf.matmul(relu1, post1_filt)
+                dense1 = tf.matmul(relu1, post1_filt[0])
 
             relu2 = tf.nn.relu(dense1, 'ReLU')
             with tf.name_scope('chan'):
-                dense2 = tf.matmul(relu2, post2_filt)
+                dense2 = tf.matmul(relu2, post2_filt[0]) 
 
             with tf.name_scope('softmax'):
                 softmax = tf.nn.softmax(dense2, 0, 'softmax')
@@ -102,9 +105,10 @@ class WaveNetGen(ar.WaveNetArch):
         '''obtain a random sample from the most recent softmax output,
         one-hot encode it, and populate the next input element
         '''
-        samp = tf.multinomial(logits_op, 1, self.rand_seed)
+        samp = tf.multinomial(logits_op, 1)
         hot = tf.one_hot(samp, self.n_quant)
-        in_buf = tf.get_variable('input', reuse=True)
+        with tf.variable_scope('preprocess', reuse=True):
+            in_buf = tf.get_variable('input')
         aop = tf.assign(in_buf[wpos + 1], hot)
         with tf.control_dependencies([aop]):
             pass            
@@ -123,25 +127,32 @@ class WaveNetGen(ar.WaveNetArch):
             op = tf.assign(v, v[:,self.batch_sz:,:])
             aops.append(op)
 
-        out_buf = tf.get_variable('output', reuse=True)
+        with tf.variable_scope('postprocess', reuse=True):
+            out_buf = tf.get_variable('output')
         with tf.control_dependencies(aops):
             out = tf.concat([out, out_buf]) 
         return out
 
 
     def _loop_cond(self, out, wpos, i):
-        gen_sz = tf.placeholder(tf.int32, (), 'gen_sz')
-        return i < gen_sz 
+        self.gen_sz = tf.placeholder(tf.int32, (), 'gen_sz')
+        return i < self.gen_sz 
 
 
     def _loop_body(self, out, wpos, i):
         '''while loop body for inference'''
         with tf.variable_scope('preprocess', reuse=None):
             in_buf = tf.get_variable('input',
-                    [self.batch_sz, self.chunk_sz, self.n_quant])
+                    [self.batch_sz, self.chunk_sz, self.n_quant],
+                    trainable=False)
+            pre_buf = tf.get_variable('input_trans',
+                    [self.batch_sz, self.chunk_sz, self.n_res],
+                    trainable=False)
+            cur = self._preprocess(in_buf, wpos)
 
-        in2_buf = self._preprocess(in_buf)
-        cur_buf = in2_buf
+        aop = tf.assign(pre_buf[wpos], cur)
+        with tf.control_dependencies([aop]):
+            cur_buf = pre_buf 
 
         skps = []
         for b in range(self.n_blocks):
@@ -150,7 +161,8 @@ class WaveNetGen(ar.WaveNetArch):
                 dil = 2**bl
                 with tf.variable_scope('dconv{}'.format(l), reuse=None):
                     dst_buf = tf.get_variable('lookback',
-                            [None, dil + self.chunk_sz, self.n_res])
+                            [self.batch_sz, dil + self.chunk_sz, self.n_res],
+                            trainable=False)
                     dconv = self._dilated_conv(cur_buf, cur, wpos)
                     sig, skp = self._chan_reduce(dconv)
                     cur = tf.add(cur, sig, name='residual_add')
@@ -161,8 +173,10 @@ class WaveNetGen(ar.WaveNetArch):
 
         skp_all = sum(skps)
         logits, softmax_out = self._postprocess(skp_all)
-        out_buf = tf.get_variable('output',
-                [None, self.chunk_sz, self.n_quant])
+        with tf.variable_scope('postprocess', reuse=None):
+            out_buf = tf.get_variable('output',
+                    [self.batch_sz, self.chunk_sz, self.n_quant],
+                    trainable=False)
         aop = tf.assign(out_buf[wpos], softmax_out)
         with tf.control_dependencies([aop]):
             self._sample_next(logits, wpos)

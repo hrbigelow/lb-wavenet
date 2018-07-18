@@ -12,11 +12,11 @@ par_dir = '/home/hrbigelow/ai/par'
 
 arch_file = 'arch1.json'
 par_file = 'par1.json'
-ckpt_file = 'arch1-100.data-00000-of-00001' 
+ckpt_file = 'arch1-100' 
 
 def main():
 
-    with open(arch_file, 'r') as fp:
+    with open(par_dir + '/' + arch_file, 'r') as fp:
         arch = json.load(fp)
 
     net = imodel.WaveNetGen(
@@ -40,7 +40,7 @@ def main():
     gen_sz = 10000
 
     wav_streams = sess.run(wave_op,
-            feed_dict={'gc_ids': gc_ids, 'gen_sz': gen_sz})
+            feed_dict={net.gc_ids: gc_ids, net.gen_sz: gen_sz})
 
 
 
