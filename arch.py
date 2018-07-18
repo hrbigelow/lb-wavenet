@@ -63,20 +63,6 @@ class WaveNetArch(object):
         according to arch'''
         return tf.get_variable(arch.name, self.shape[arch])
 
-    def _arch_string(self):
-        '''generate a string corresponding to the architecture
-        parameters of the model'''
-        return 'b{}_l{}_q{}_r{}_d{}_s{}_p{}_e{}_c{}'.format(
-                self.n_blocks,
-                self.n_block_layers,
-                self.n_quant,
-                self.n_res,
-                self.n_dil,
-                self.n_skip,
-                self.n_post,
-                self.n_gc_embed,
-                self.n_gc_category)
-
     def _maybe_init_saver(self):
         if not self.graph_built:
             raise ValueError
@@ -84,21 +70,26 @@ class WaveNetArch(object):
             self.saver = tf.train.Saver(
                     tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES))
 
-    def save(self, sess, logdir, file_pfx, step):
+    def _json_stem(self, json_file):
+        import re
+        m = re.fullmatch('(.+)\.json', json_file)
+        return m.group(1)
+
+    def save(self, sess, log_dir, arch_json, step):
         '''saves trainable variables, generating a special filename
         that encodes architectural parameters'''
         self._maybe_init_saver()
-        fn = '{}/{}.{}'.format(logdir, file_pfx, self._arch_string())
-        path_pfx = self.saver.save(fn, sess, step)
+        arch = self._json_stem(arch_json)
+        save_path = '{}/{}'.format(log_dir, arch)
+        path_pfx = self.saver.save(sess, save_path, step)
         return path_pfx
 
 
-    def restore(self, sess, logdir, file_pfx, step):
+    def restore(self, sess, ckpt_file):
         '''finds the appropriate checkpoint file saved by 'save' and loads into
         the existing graph'''
         self._maybe_init_saver()
-        fn = '{}/{}.{}'.format(logdir, file_pfx, self._arch_string())
-        self.saver.restore(sess, fn)
+        self.saver.restore(sess, ckpt_file)
     
 
 

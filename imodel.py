@@ -13,7 +13,7 @@ class WaveNetGen(ar.WaveNetArch):
             n_post1,
             n_gc_embed,
             n_gc_category,
-            l2_factor,
+            batch_sz,
             chunk_sz):
 
         super().__init__(
@@ -27,16 +27,8 @@ class WaveNetGen(ar.WaveNetArch):
                 n_gc_embed,
                 n_gc_category)
 
+        self.batch_sz = batch_sz
         self.chunk_sz = chunk_sz
-        # create all lookback buffers
-        self.input = tf.Variable(tf.zeros([None, self.chunk_sz + 1]),
-                name='lb_in',
-                trainable=False)
-        self.lookback = [tf.Variable(tf.zeros([None, 2**l + self.chunk_sz]),
-            name='lb_b{}_l{}'.format(b, l),
-            trainable=False)
-            for b in range(self.n_blocks)
-            for l in range(self.n_block_layers)]
 
 
     def _preprocess(self, prev_val):
@@ -44,9 +36,11 @@ class WaveNetGen(ar.WaveNetArch):
         ready for the layers.'''  
         with tf.name_scope('preprocess'):
             if self.use_gc:
-                gc_tab = self.get_var('GE', ar.ArchCat.PRE)
-            filt = self.get_var('QR', ar.ArchCat.PRE)
-            pre_op = tf.matmul(prev_val, filt[0]) + tf.matmul(prev_val, filt[1])
+                self.gc_ids = tf.placeholder(tf.int32, [None], 'gc_ids')
+                gc_tab = self.get_variable(ar.ArchCat.GC_EMBED)
+                self.gc_embeds = tf.gather(gc_tab, self.gc_ids)
+            filt = self.get_variable(ar.ArchCat.PRE)
+            pre_op = tf.matmul(prev_val, filt[0])
         return pre_op
 
 
@@ -55,8 +49,6 @@ class WaveNetGen(ar.WaveNetArch):
         pos: zero-based position in the cached window
         prev_val: value from previous layer at time t 
         '''
-        embed = self.get_embed()
-
         v = {}
         for arch in [ar.ArchCat.SIGNAL, ar.ArchCat.GATE]:
             filt = self.get_variable(arch)
@@ -66,7 +58,7 @@ class WaveNetGen(ar.WaveNetArch):
         if self.use_gc:
             for arch in [ar.ArchCat.GC_SIGNAL, ar.ArchCat.GC_GATE]: 
                 gc_filt = self.get_variable(arch)
-                gc_proj = tf.matmul(embed, gc_filt[0]) + tf.matmul(embed, gc_filt[1])
+                gc_proj = tf.matmul(self.gc_embeds, gc_filt[0])
                 v[arch] = tf.add(v[arch], gc_proj, 'add')
 
         z = tf.tanh(v[ar.ArchCat.SIGNAL]) * tf.sigmoid(v[ar.ArchCat.GATE])
@@ -83,6 +75,7 @@ class WaveNetGen(ar.WaveNetArch):
         with tf.name_scope('skip'):
             skip = tf.matmul(prev_op, skip_filt)
         return signal, skip 
+
 
     def _postprocess(self, prev_op):
         '''implement post-processing, just after the '+' sign and
@@ -104,6 +97,7 @@ class WaveNetGen(ar.WaveNetArch):
 
         return dense2, softmax
 
+
     def _sample_next(self, logits_op, wpos):
         '''obtain a random sample from the most recent softmax output,
         one-hot encode it, and populate the next input element
@@ -114,7 +108,6 @@ class WaveNetGen(ar.WaveNetArch):
         aop = tf.assign(in_buf[wpos + 1], hot)
         with tf.control_dependencies([aop]):
             pass            
-
 
 
     def _next_window(self, out):
@@ -137,13 +130,16 @@ class WaveNetGen(ar.WaveNetArch):
 
 
     def _loop_cond(self, out, wpos, i):
-        return i < self.gen_sz 
+        gen_sz = tf.placeholder(tf.int32, (), 'gen_sz')
+        return i < gen_sz 
 
 
     def _loop_body(self, out, wpos, i):
         '''while loop body for inference'''
-        in_buf = tf.get_variable('input', [None, self.chunk_sz, self.n_quant],
-            reuse=None)
+        with tf.variable_scope('preprocess', reuse=None):
+            in_buf = tf.get_variable('input',
+                    [self.batch_sz, self.chunk_sz, self.n_quant])
+
         in2_buf = self._preprocess(in_buf)
         cur_buf = in2_buf
 
@@ -152,7 +148,7 @@ class WaveNetGen(ar.WaveNetArch):
             for bl in range(self.n_block_layers):
                 l = b * self.n_block_layers + bl
                 dil = 2**bl
-                with tf.variable_scope('dconv{}'.format(l), resuse=None):
+                with tf.variable_scope('dconv{}'.format(l), reuse=None):
                     dst_buf = tf.get_variable('lookback',
                             [None, dil + self.chunk_sz, self.n_res])
                     dconv = self._dilated_conv(cur_buf, cur, wpos)
@@ -179,10 +175,11 @@ class WaveNetGen(ar.WaveNetArch):
         return out, wpos, i 
 
 
-    def create_inference_graph(self):
+    def build_graph(self):
         '''create the whole inference graph, which is capable of generating some
         number of waveforms incrementally in parallel'''
         waveform, _, _ = tf.while_loop(self._loop_cond, self._loop_body, ([], 0, 0))
+        self.graph_built = True
         return waveform
 
 

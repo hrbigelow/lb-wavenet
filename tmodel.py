@@ -177,7 +177,7 @@ class WaveNetTrain(ar.WaveNetArch):
         return total_loss
 
 
-    def create_training_graph(self, wav_input, id_masks, id_maps):
+    def build_graph(self, wav_input, id_masks, id_maps):
         '''creates the training graph and returns the loss node for the graph.
         the inputs to this function are data.Dataset.iterator.get_next() operations.
         This graph performs the forward calculation in parallel across
@@ -207,6 +207,8 @@ class WaveNetTrain(ar.WaveNetArch):
             skp_all = sum(skps)
             logits, softmax_out = self._postprocess(skp_all)
             loss = self._loss_fcn(encoded_input, logits, id_masks, self.l2_factor)
+
+        self.graph_built = True
 
         return loss 
 
