@@ -27,17 +27,22 @@ class WaveNetGen(ar.WaveNetArch):
                 n_gc_embed,
                 n_gc_category)
 
-        self.batch_sz = batch_sz
         self.chunk_sz = chunk_sz
+        self.batch_sz = batch_sz
+
+    def _non_loop_init(self):
+        '''operations that will run before the loop starts'''
+        if self.use_gc:
+            self.gc_ids = tf.placeholder(tf.int32, (self.batch_sz,), 'gc_ids')
+            gc_tab = self.get_variable(ar.ArchCat.GC_EMBED)
+            self.gc_embeds = tf.gather(gc_tab, self.gc_ids)
+            
+        self.gen_sz = tf.placeholder(tf.int32, (), 'gen_sz')
 
 
     def _preprocess(self, src_buf, gpos):
         '''everything done to the raw signal before it is
         ready for the layers.'''  
-        if self.use_gc:
-            self.gc_ids = tf.placeholder(tf.int32, [None], 'gc_ids')
-            gc_tab = self.get_variable(ar.ArchCat.GC_EMBED)
-            self.gc_embeds = tf.gather(gc_tab, self.gc_ids)
         filt = self.get_variable(ar.ArchCat.PRE)
         pre_op = tf.matmul(src_buf[:,gpos,:], filt[0])
 
@@ -72,11 +77,9 @@ class WaveNetGen(ar.WaveNetArch):
         '''simply provide the channel reducing operations'''
         sig_filt = self.get_variable(ar.ArchCat.RESIDUAL)
         skp_filt = self.get_variable(ar.ArchCat.SKIP)
+        signal = tf.matmul(prev_op, sig_filt[0], name='signal')
+        skip = tf.matmul(prev_op, skp_filt[0], name='skip')
 
-        with tf.name_scope('signal'):
-            signal = tf.matmul(prev_op, sig_filt[0])
-        with tf.name_scope('skip'):
-            skip = tf.matmul(prev_op, skp_filt[0])
         return signal, skip 
 
 
@@ -101,45 +104,40 @@ class WaveNetGen(ar.WaveNetArch):
         return dense2, softmax
 
 
-    def _sample_next(self, logits_op, wpos):
+    def _sample_next(self, logits_op, wpos, in_buf):
         '''obtain a random sample from the most recent softmax output,
         one-hot encode it, and populate the next input element
         '''
         samp = tf.multinomial(logits_op, 1)
         hot = tf.one_hot(samp, self.n_quant)
-        with tf.variable_scope('preprocess', reuse=True):
-            in_buf = tf.get_variable('input')
         aop = tf.assign(in_buf[wpos + 1], hot)
-        with tf.control_dependencies([aop]):
-            pass            
+        return aop
 
 
-    def _next_window(self, out):
+    def _next_window(self, out_buf, out):
         '''called after each chunk_sz iterations of _loop_body.
         appends the populated window to the final output buffer,
         and advances all lookback buffers.
+        returns: tensor of shape [None, total_length]
         '''
         lb_vars = [v for v in tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES)
                 if 'lookback' in v.name]
         # copy len-chunk_sz last values to beginning
         aops = []
         for v in lb_vars:
-            op = tf.assign(v, v[:,self.batch_sz:,:])
+            op = tf.assign(v, v[:,self.chunk_sz:,:])
             aops.append(op)
 
-        with tf.variable_scope('postprocess', reuse=True):
-            out_buf = tf.get_variable('output')
         with tf.control_dependencies(aops):
             out = tf.concat([out, out_buf]) 
         return out
 
 
-    def _loop_cond(self, out, wpos, i):
-        self.gen_sz = tf.placeholder(tf.int32, (), 'gen_sz')
+    def _loop_cond(self, i, out, wpos):
         return i < self.gen_sz 
 
 
-    def _loop_body(self, out, wpos, i):
+    def _loop_body(self, i, out, wpos):
         '''while loop body for inference'''
         with tf.variable_scope('preprocess', reuse=None):
             in_buf = tf.get_variable('input',
@@ -179,20 +177,27 @@ class WaveNetGen(ar.WaveNetArch):
                     trainable=False)
         aop = tf.assign(out_buf[wpos], softmax_out)
         with tf.control_dependencies([aop]):
-            self._sample_next(logits, wpos)
+            sop = self._sample_next(logits, wpos, in_buf)
 
-        wpos = wpos + 1
+        with tf.control_dependencies([sop]):
+            wpos = wpos + 1
+
+        wpos = tf.Print(wpos, [wpos], 'Wpos=')
         if wpos == self.chunk_sz:
-            out = self._next_window(out)
+            out = self._next_window(out_buf, out)
             wpos = 0
 
-        return out, wpos, i 
+        return i + 1, out, wpos
 
 
     def build_graph(self):
         '''create the whole inference graph, which is capable of generating some
         number of waveforms incrementally in parallel'''
-        waveform, _, _ = tf.while_loop(self._loop_cond, self._loop_body, ([], 0, 0))
+        with tf.variable_scope('preprocess', reuse=None): 
+            self._non_loop_init()
+
+        _, waveform, _ = tf.while_loop(self._loop_cond, self._loop_body,
+                (0, [], 0))
         self.graph_built = True
         return waveform
 

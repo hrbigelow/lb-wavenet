@@ -56,15 +56,14 @@ class WaveNetTrain(ar.WaveNetArch):
         with tf.name_scope('config_inputs'):
             self.batch_sz = tf.shape(wav_input_encoded)[0]
 
-        with tf.name_scope('preprocess'):
-            if self.use_gc:
-                # gc_embeds[batch][i] = embedding vector
-                gc_tab = self.get_variable(ar.ArchCat.GC_EMBED)
-                self.gc_embeds = [tf.nn.embedding_lookup(gc_tab, m) for m in id_maps]
+        if self.use_gc:
+            # gc_embeds[batch][i] = embedding vector
+            gc_tab = self.get_variable(ar.ArchCat.GC_EMBED)
+            self.gc_embeds = [tf.nn.embedding_lookup(gc_tab, m) for m in id_maps]
 
-            filt = self.get_variable(ar.ArchCat.PRE)
-            pre_op = tf.nn.convolution(wav_input_encoded, filt,
-                    'VALID', [1], [1], 'in_conv')
+        filt = self.get_variable(ar.ArchCat.PRE)
+        pre_op = tf.nn.convolution(wav_input_encoded, filt,
+                'VALID', [1], [1], 'in_conv')
         return pre_op
 
     def _map_embeds(self, id_masks, proj_filt, conv_name):
@@ -90,8 +89,8 @@ class WaveNetTrain(ar.WaveNetArch):
         with tf.name_scope('load_store_values'):
             saved_shape = [batch_sz, dilation, self.n_res]
             save = tf.Variable(tf.zeros(saved_shape), name='saved_length%i' % dilation,
-                    validate_shape = False,
-                    trainable = False)
+                    trainable=False,
+                    validate_shape=False)
             stop_grad = tf.stop_gradient(save)
             concat = tf.concat([stop_grad, prev_op], 1, name='concat')
             aop = save.assign(concat[:,-dilation:,:])
@@ -123,10 +122,9 @@ class WaveNetTrain(ar.WaveNetArch):
     def _chan_reduce(self, prev_op):
         sig_filt = self.get_variable(ar.ArchCat.RESIDUAL)
         skp_filt = self.get_variable(ar.ArchCat.SKIP)
-        with tf.name_scope('signal'):
-            signal = tf.nn.convolution(prev_op, sig_filt, 'VALID', [1], [1], 'conv')
-        with tf.name_scope('skip'):
-            skip = tf.nn.convolution(prev_op, skp_filt, 'VALID', [1], [1], 'conv')
+        signal = tf.nn.convolution(prev_op, sig_filt, 'VALID', [1], [1], 'signal')
+        skip = tf.nn.convolution(prev_op, skp_filt, 'VALID', [1], [1], 'skip')
+
         return signal, skip 
 
 
@@ -187,26 +185,24 @@ class WaveNetTrain(ar.WaveNetArch):
         id_masks: list of batch_sz id_masks
         id_maps: list of batch_sz id_maps '''
 
-        # use the same graph as the input
-        graph = wav_input.graph 
-        with graph.as_default():
-            encoded_input = self.encode_input_onehot(wav_input)
+        encoded_input = self.encode_input_onehot(wav_input)
+        with tf.variable_scope('preprocess', reuse=None):
             cur = self._preprocess(encoded_input, id_maps)
-            skps = []
+        skps = []
 
-            for b in range(self.n_blocks):
-                for bl in range(self.n_block_layers):
-                    l = b * self.n_block_layers + bl
-                    dil = 2**bl
-                    with tf.variable_scope('dconv{}'.format(l), reuse=None):
-                        dconv = self._dilated_conv(cur, dil, id_masks, self.batch_sz)
-                        sig, skp = self._chan_reduce(dconv)
-                        skps.append(skp)
-                        cur = tf.add(cur, sig, name='residual_add') 
+        for b in range(self.n_blocks):
+            for bl in range(self.n_block_layers):
+                l = b * self.n_block_layers + bl
+                dil = 2**bl
+                with tf.variable_scope('dconv{}'.format(l), reuse=None):
+                    dconv = self._dilated_conv(cur, dil, id_masks, self.batch_sz)
+                    sig, skp = self._chan_reduce(dconv)
+                    skps.append(skp)
+                    cur = tf.add(cur, sig, name='residual_add') 
 
-            skp_all = sum(skps)
-            logits, softmax_out = self._postprocess(skp_all)
-            loss = self._loss_fcn(encoded_input, logits, id_masks, self.l2_factor)
+        skp_all = sum(skps)
+        logits, softmax_out = self._postprocess(skp_all)
+        loss = self._loss_fcn(encoded_input, logits, id_masks, self.l2_factor)
 
         self.graph_built = True
 

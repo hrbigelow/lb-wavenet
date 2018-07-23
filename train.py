@@ -9,7 +9,7 @@ log_dir = '/home/hrbigelow/ai/ckpt'
 par_dir = '/home/hrbigelow/ai/par'
 arch_file = 'arch1.json'
 par_file = 'par1.json'
-max_steps = 1000
+max_steps = 200 
 
 def main():
 
@@ -68,6 +68,7 @@ def main():
 
     #input('Continue?')
     print('Starting training')
+    step = 0
     while step < max_steps:
         _, step, loss_val = sess.run([apply_grads, global_step, loss])
         print('step, loss: {}\t{}'.format(step, loss_val))

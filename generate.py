@@ -4,7 +4,7 @@ import tensorflow as tf
 import librosa 
 import json
 
-batch_sz = 10
+batch_sz = 2 
 chunk_sz = 1000
 sample_rate = 16000
 log_dir = '/home/hrbigelow/ai/ckpt'
@@ -33,14 +33,20 @@ def main():
             chunk_sz)
 
     wave_op = net.build_graph()
+    print('Type of wave_op: ' + type(wave_op))
 
     sess = tf.Session()
     net.restore(sess, log_dir + '/' + ckpt_file) 
-    gc_ids = [5,8,10]
-    gen_sz = 10000
+    gc_ids = [5,6]
+    gen_sz = 100 
 
+    print('Starting inference...')
     wav_streams = sess.run(wave_op,
-            feed_dict={net.gc_ids: gc_ids, net.gen_sz: gen_sz})
+            feed_dict={
+                net.gc_ids: gc_ids,
+                net.gen_sz: gen_sz
+                })
+    print(wav_streams)
 
 
 
