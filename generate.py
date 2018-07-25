@@ -36,6 +36,8 @@ def main():
 
     sess = tf.Session()
     net.restore(sess, log_dir + '/' + ckpt_file) 
+    net.init_buffers(sess)
+
     gc_ids = [5,6]
     gen_sz = 1000 
 
@@ -45,7 +47,7 @@ def main():
                 net.gc_ids: gc_ids,
                 net.gen_sz: gen_sz
                 })
-    print(wpos)
+    print(wav_streams)
 
 
 
