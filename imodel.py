@@ -1,5 +1,7 @@
 import tensorflow as tf
 import arch as ar
+import ops
+
 
 class WaveNetGen(ar.WaveNetArch):
 
@@ -106,18 +108,18 @@ class WaveNetGen(ar.WaveNetArch):
         return dense2, softmax
 
 
-    def _sample_next(self, logits_op, wpos, in_buf):
+    def _sample_next(self, logits):
         '''obtain a random sample from the most recent softmax output,
         one-hot encode it, and populate the next input element
         '''
-        samp = tf.multinomial(logits_op, 1)
+        samp = tf.multinomial(logits, 1)
         hot = tf.one_hot(samp, self.n_quant)
-        aop = tf.assign(in_buf[wpos + 1], hot)
-        return aop
-
+        wav_val = ops.mu_decode(samp, self.n_quant)
+        return samp, hot, wav_val 
 
     def _next_window(self, wav_buf, wav):
-        '''called after each chunk_sz iterations of _loop_body.
+        '''
+        called after each chunk_sz iterations of _loop_body.
         appends the populated window to the final output buffer,
         and advances all lookback buffers.
         wav_buf: [batch_sz, chunk_sz]
@@ -132,7 +134,7 @@ class WaveNetGen(ar.WaveNetArch):
             aops.append(op)
 
         with tf.control_dependencies(aops):
-            wav= tf.concat([wav, wav_buf], 1) 
+            wav = tf.concat([wav, wav_buf], 1) 
         return wav 
 
 
@@ -141,7 +143,16 @@ class WaveNetGen(ar.WaveNetArch):
 
 
     def _loop_body(self, i, wav, wpos):
-        '''while loop body for inference'''
+        '''while loop body for inference
+        wav: [batch_sz, total_length] final output wav data
+        i: loop iteration
+        wpos: window position in [0, chunk_sz)
+        
+        intermediate buffers used:
+        in_buf: holds one-hot vectors which encode the sampled logits from t-1
+        pre_buf: linearly transformed in_buf values
+        dst_buf (one for each layer): holds the output of the convolutional layer
+        wav_buf: holds the final output'''
         with tf.variable_scope('preprocess', reuse=None):
             # in_buf has one-hot vectors of size self.n_quant
             in_buf = tf.get_variable('input',
@@ -179,16 +190,21 @@ class WaveNetGen(ar.WaveNetArch):
             wav_buf = tf.get_variable('output',
                     [self.batch_sz, self.chunk_sz],
                     trainable=False)
-        sop = self._sample_next(logits, wpos, in_buf)
 
+        samp, hot, wav_val = self._sample_next(logits)
 
-        wpos = tf.Print(wpos, [wpos], 'Wpos=')
+        wop = tf.assign(wav_buf[wpos], wav_val)
+        with tf.control_dependencies([wop]):
+            wav_nxt, wpos_nxt = tf.cond(tf.equal(wpos + 1, self.chunk_sz),
+                    lambda: (self._next_window(wav_buf, wav), 0),
+                    lambda: (wav, wpos + 1))
 
-        wav, wpos = tf.cond(tf.equal(wpos, self.chunk_sz),
-                lambda: (self._next_window(in_buf, in), 0),
-                lambda: (in, wpos))
+        iop = tf.assign(in_buf[wpos_nxt], hot)
+        with tf.control_dependencies([iop]):
+            return i + 1, wav_nxt, wpos_nxt
 
-        return i + 1, wav, wpos + 1
+    def init_buffers(self):
+        '''initialize all non-trainable variable buffers used during inference'''
 
 
     def build_graph(self):
@@ -197,9 +213,13 @@ class WaveNetGen(ar.WaveNetArch):
         with tf.variable_scope('preprocess', reuse=None): 
             self._non_loop_init()
 
-        seed = tf.zeros([self.batch_sz, 0, self.n_quant])
+        seed = tf.zeros([self.batch_sz, 0])
         i, waveform, wpos = tf.while_loop(
-                self._loop_cond, self._loop_body, (0, seed, 0))
+                self._loop_cond, self._loop_body,
+                loop_vars=(0, seed, 0),
+                shape_invariants=(tf.TensorShape(()),
+                    tf.TensorShape([self.batch_sz, None]),
+                    tf.TensorShape(())))
         self.graph_built = True
         return i, waveform, wpos
 

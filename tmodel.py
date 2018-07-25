@@ -1,14 +1,6 @@
 import tensorflow as tf
 import arch as ar 
-
-
-def mu_encode(x, n_quanta):
-    '''mu-law encode and quantize'''
-    mu = tf.to_float(n_quanta - 1)
-    amp = tf.sign(x) * tf.log1p(mu * tf.abs(x)) / tf.log1p(mu)
-    quant = (amp + 1) * 0.5 * mu + 0.5
-    return tf.to_int32(quant)
-
+import ops
 
 
 class WaveNetTrain(ar.WaveNetArch):
@@ -44,7 +36,7 @@ class WaveNetTrain(ar.WaveNetArch):
 
     def encode_input_onehot(self, wav_input):
         with tf.name_scope('encode'):
-            wav_input_mu = mu_encode(wav_input, self.n_quant)
+            wav_input_mu = ops.mu_encode(wav_input, self.n_quant)
             # wav_input_onehot[b][t][i], batch b, time t, category i
             wav_input_onehot = tf.one_hot(wav_input_mu, self.n_quant, axis = -1,
                     name = 'one_hot_input')
