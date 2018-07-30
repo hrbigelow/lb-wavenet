@@ -27,7 +27,8 @@ class WaveNetGen(ar.WaveNetArch):
                 n_skip,
                 n_post1,
                 n_gc_embed,
-                n_gc_category)
+                n_gc_category,
+                add_summary=False)
 
         self.chunk_sz = chunk_sz
         self.batch_sz = batch_sz

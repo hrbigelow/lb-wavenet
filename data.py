@@ -55,6 +55,7 @@ class MaskedSliceWav(object):
     def _read_wav_file(self, wav_file):
         '''read the contents of a wav file, returning np.ndarray'''
         audio, _ = librosa.load(wav_file, sr=self.sample_rate, mono=True)
+        # print('Reading %s' % wav_file)
         #audio = audio.reshape(-1, 1)
         return audio
 
@@ -178,7 +179,8 @@ class MaskedSliceWav(object):
                         (tf.float32, tf.int32, tf.int32), (one_d, one_d, one_d))
 
             with tf.name_scope('batching'):
-                slices = [d4.make_one_shot_iterator().get_next()] * self.batch_sz
+                slices = [d4.make_one_shot_iterator().get_next()
+                        for _ in range(self.batch_sz)]
                 wav = tf.stack([s[0] for s in slices])
                 ids = [s[1] for s in slices]
                 id_maps = [s[2] for s in slices]

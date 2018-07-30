@@ -3,13 +3,27 @@ import tmodel
 import data
 import tensorflow as tf
 import json
+import signal
+from tensorflow.python import debug as tf_debug
+
 
 sam_file = 'samples.rdb'
-log_dir = '/home/hrbigelow/ai/ckpt'
+ckpt_dir = '/home/hrbigelow/ai/ckpt'
+tb_dir = '/home/hrbigelow/ai/tb_events/lb-wavenet'
 par_dir = '/home/hrbigelow/ai/par'
-arch_file = 'arch1.json'
+arch_file = 'arch4.json'
 par_file = 'par1.json'
-max_steps = 200 
+max_steps = 30000 
+add_summary = True
+
+def make_flusher(file_writer):
+    def cleanup(sig, frame):
+        print('Flushing file_writer...', end='')
+        file_writer.flush()
+        print('done.')
+        exit(1)
+    signal.signal(signal.Signals.SIGINT, cleanup) 
+
 
 def main():
 
@@ -18,6 +32,8 @@ def main():
 
     with open(par_dir + '/' + par_file, 'r') as fp:
         par = json.load(fp)
+
+    print(arch)
 
     net = tmodel.WaveNetTrain(
             arch['n_blocks'],
@@ -29,7 +45,9 @@ def main():
             arch['n_post1'],
             arch['n_gc_embed'],
             arch['n_gc_category'],
-            par['l2_factor']
+            arch['use_bias'],
+            par['l2_factor'],
+            add_summary
             )
     recep_field_sz = net.get_recep_field_sz()
 
@@ -44,10 +62,15 @@ def main():
     dset.init_sample_catalog()
 
     sess = tf.Session()
+    # sess = tf_debug.LocalCLIDebugWrapperSession(sess)
+
     (wav_input, id_masks, id_maps) = dset.wav_dataset(sess)
     print('Created dataset.')
 
     loss = net.build_graph(wav_input, id_masks, id_maps)
+    summary_op = tf.summary.merge_all()
+    fw = tf.summary.FileWriter(tb_dir, graph=sess.graph)
+    make_flusher(fw)
     print('Created training graph.')
 
     optimizer = tf.train.AdamOptimizer()
@@ -62,18 +85,19 @@ def main():
     init = tf.global_variables_initializer()
     sess.run(init)
     print('Initialized training graph.')
-    #input('Continue?')
 
     sess.run(global_step.initializer)
 
-    #input('Continue?')
     print('Starting training')
     step = 0
     while step < max_steps:
         _, step, loss_val = sess.run([apply_grads, global_step, loss])
-        print('step, loss: {}\t{}'.format(step, loss_val))
+        if step % 10 == 0:
+            print('step, loss: {}\t{}'.format(step, loss_val))
+            fw.add_summary(sess.run(summary_op), step)
         if step % 100 == 0:
-            net.save(sess, log_dir, arch_file, step)
+            print('Saving checkpoint to %s\n' % arch_file)
+            net.save(sess, ckpt_dir, arch_file, step)
         
 
 

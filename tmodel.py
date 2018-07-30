@@ -15,7 +15,9 @@ class WaveNetTrain(ar.WaveNetArch):
             n_post1,
             n_gc_embed,
             n_gc_category,
-            l2_factor):
+            l2_factor,
+            use_bias,
+            add_summary):
 
         super().__init__(
                 n_blocks,
@@ -26,7 +28,9 @@ class WaveNetTrain(ar.WaveNetArch):
                 n_skip,
                 n_post1,
                 n_gc_embed,
-                n_gc_category)
+                n_gc_category,
+                use_bias,
+                add_summary)
 
         self.l2_factor = l2_factor
         self.saved = []
@@ -55,7 +59,7 @@ class WaveNetTrain(ar.WaveNetArch):
 
         filt = self.get_variable(ar.ArchCat.PRE)
         pre_op = tf.nn.convolution(wav_input_encoded, filt,
-                'VALID', [1], [1], 'in_conv')
+                'VALID', [1], [1], 'conv')
         return pre_op
 
     def _map_embeds(self, id_masks, proj_filt, conv_name):
@@ -95,9 +99,14 @@ class WaveNetTrain(ar.WaveNetArch):
 
         for arch in sig_gate:
             filt = self.get_variable(arch)
-            with tf.name_scope(arch.name):
-                v[arch] = tf.nn.convolution(concat, filt, 
-                        'VALID', [1], [dilation], 'dilation%i_conv' % dilation)
+            abs_mean = tf.reduce_mean(tf.abs(filt))
+            filt = tf.Print(filt, [mean], 'D%i: ' % dilation)
+            v[arch] = tf.nn.convolution(concat, filt, 'VALID',
+                    [1], [dilation], 'conv')
+            if self.use_bias:
+                bias = self.get_variable(arch, True)
+                # bias = tf.Print(bias, [bias])
+                v[arch] = tf.add(v[arch], bias, 'add_bias')
 
         if self.use_gc:
             for a, g in zip(sig_gate, sig_gate_gc): 
@@ -112,11 +121,16 @@ class WaveNetTrain(ar.WaveNetArch):
 
 
     def _chan_reduce(self, prev_op):
-        sig_filt = self.get_variable(ar.ArchCat.RESIDUAL)
-        skp_filt = self.get_variable(ar.ArchCat.SKIP)
-        signal = tf.nn.convolution(prev_op, sig_filt, 'VALID', [1], [1], 'signal')
-        skip = tf.nn.convolution(prev_op, skp_filt, 'VALID', [1], [1], 'skip')
+        chan = [ar.ArchCat.RESIDUAL, ar.ArchCat.SKIP]
+        v = {}
+        for arch in chan:
+            filt = self.get_variable(arch)
+            v[arch] = tf.nn.convolution(prev_op, filt, 'VALID', [1], [1], 'conv')
+            if self.use_bias:
+                bias = self.get_variable(arch, True)
+                v[arch] = tf.add(v[arch], bias, 'add_bias')
 
+        signal, skip = v[chan[0]], v[chan[1]]
         return signal, skip 
 
 
@@ -130,10 +144,16 @@ class WaveNetTrain(ar.WaveNetArch):
             relu1 = tf.nn.relu(prev_op, 'ReLU')
             with tf.name_scope('chan'):
                 dense1 = tf.nn.convolution(relu1, post1_filt, 'VALID', [1], [1], 'conv')
+                if self.use_bias:
+                    bias = self.get_variable(ar.ArchCat.POST1, True)
+                    dense1 = tf.add(dense1, bias, 'add_bias')
 
             relu2 = tf.nn.relu(dense1, 'ReLU')
             with tf.name_scope('chan'):
                 dense2 = tf.nn.convolution(relu2, post2_filt, 'VALID', [1], [1], 'conv')
+                if self.use_bias:
+                    bias = self.get_variable(ar.ArchCat.POST2, True)
+                    dense2 = tf.add(dense2, bias, 'add_bias')
 
             with tf.name_scope('softmax'):
                 softmax = tf.nn.softmax(dense2, 0, 'softmax')
@@ -159,7 +179,7 @@ class WaveNetTrain(ar.WaveNetArch):
                 if l2_factor != 0:
                     l2_loss = tf.add_n([tf.nn.l2_loss(v)
                         for v in tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES) 
-                        if not ('bias' in v.name)])
+                        if not ('BIAS' in v.name)])
                 else:
                     l2_loss = 0
             total_loss = mean_cross_ent + l2_factor * l2_loss
@@ -178,19 +198,20 @@ class WaveNetTrain(ar.WaveNetArch):
         id_maps: list of batch_sz id_maps '''
 
         encoded_input = self.encode_input_onehot(wav_input)
-        with tf.variable_scope('preprocess', reuse=None):
+        with tf.variable_scope('preprocess'):
             cur = self._preprocess(encoded_input, id_maps)
         skps = []
 
         for b in range(self.n_blocks):
-            for bl in range(self.n_block_layers):
-                l = b * self.n_block_layers + bl
-                dil = 2**bl
-                with tf.variable_scope('dconv{}'.format(l), reuse=None):
-                    dconv = self._dilated_conv(cur, dil, id_masks, self.batch_sz)
-                    sig, skp = self._chan_reduce(dconv)
-                    skps.append(skp)
-                    cur = tf.add(cur, sig, name='residual_add') 
+            with tf.variable_scope('block{}'.format(b)):
+                for bl in range(self.n_block_layers):
+                    with tf.variable_scope('layer{}'.format(bl)):
+                        l = b * self.n_block_layers + bl
+                        dil = 2**bl
+                        dconv = self._dilated_conv(cur, dil, id_masks, self.batch_sz)
+                        sig, skp = self._chan_reduce(dconv)
+                        skps.append(skp)
+                        cur = tf.add(cur, sig, name='residual_add') 
 
         skp_all = sum(skps)
         logits, softmax_out = self._postprocess(skp_all)

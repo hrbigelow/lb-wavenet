@@ -30,7 +30,9 @@ class WaveNetArch(object):
             n_skip,
             n_post,
             n_gc_embed,
-            n_gc_category):
+            n_gc_category,
+            use_bias,
+            add_summary):
 
         self.n_blocks = n_blocks
         self.n_block_layers = n_block_layers
@@ -44,6 +46,10 @@ class WaveNetArch(object):
         self.use_gc = n_gc_embed > 0
         self.graph_built = False
         self.saver = None
+        self.add_summary = add_summary
+        self.use_bias = use_bias
+        self.filter_init = tf.contrib.layers.xavier_initializer_conv2d()
+        self.bias_init = tf.constant_initializer(value=0.0, dtype=tf.float32)
 
         self.shape = {
                 ArchCat.PRE: [1, self.n_quant, self.n_res],
@@ -58,10 +64,22 @@ class WaveNetArch(object):
                 ArchCat.POST2: [1, self.n_post, self.n_quant]
                 }
 
-    def get_variable(self, arch):
+    def get_variable(self, arch, get_bias=False):
         '''wrapper for tf.get_variable that supplies the proper shape and name
         according to arch'''
-        return tf.get_variable(arch.name, self.shape[arch])
+        if get_bias:
+            name = arch.name + '_BIAS'
+            shape = self.shape[arch][2]
+            init = self.bias_init
+        else:
+            name = arch.name
+            shape = self.shape[arch]
+            init = self.filter_init
+
+        var = tf.get_variable(name, shape, initializer=init)
+        if self.add_summary:
+            tf.summary.histogram(name, var)
+        return var
 
     def _maybe_init_saver(self):
         if not self.graph_built:

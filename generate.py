@@ -9,10 +9,11 @@ chunk_sz = 100
 sample_rate = 16000
 log_dir = '/home/hrbigelow/ai/ckpt'
 par_dir = '/home/hrbigelow/ai/par'
+wav_dir = '/home/hrbigelow/ai/wav'
 
 arch_file = 'arch1.json'
 par_file = 'par1.json'
-ckpt_file = 'arch1-100' 
+ckpt_file = 'arch1-1900' 
 
 def main():
 
@@ -39,7 +40,7 @@ def main():
     net.init_buffers(sess)
 
     gc_ids = [5,6]
-    gen_sz = 1000 
+    gen_sz = 100000 
 
     print('Starting inference...')
     i, wav_streams, wpos = sess.run(wave_op,
@@ -47,7 +48,12 @@ def main():
                 net.gc_ids: gc_ids,
                 net.gen_sz: gen_sz
                 })
-    print(wav_streams)
+
+    print('Writing wav files.')
+    for i in range(len(gc_ids)):
+        path = '{}/gen.g{}.i{}.wav'.format(wav_dir, gc_ids[i], i)
+        librosa.output.write_wav(path, wav_streams[i], sample_rate)
+    print('Finished.')
 
 
 
