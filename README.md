@@ -21,7 +21,7 @@ produces the same values as a virtual slice of an indefinitely long
 computation.
 
 
-## SGD batches use consecutive samples from multple .wav files 
+## SGD batches use consecutive samples from multiple .wav files 
 
 For supervised training, each (x, y) sample consists of a window of values from
 the .wav file as x, and the next value following the window as the target y.

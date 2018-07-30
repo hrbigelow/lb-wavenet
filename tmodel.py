@@ -77,17 +77,15 @@ class WaveNetTrain(ar.WaveNetArch):
         return tf.stack(gathered)
 
     
-    def _dilated_conv(self, prev_op, dilation, id_masks, batch_sz): 
-        '''construct one dilated, gated convolution as in equation 2 of WaveNet Sept 2016'''
+    def _dilated_conv(self, prev_z, dilation, id_masks, batch_sz): 
+        '''construct one dilated, gated convolution as in equation 2 of WaveNet
+        Sept 2016'''
     
-        # !!! 
-        # save last postiions from prev_op
+        # prev_z_save is already populated according to the current window
         saved_shape = [batch_sz, dilation, self.n_res]
-        save = tf.get_variable('lookback_buffer', shape, initializer=tf.zeros,
-                trainable=False)
-        stop_grad = tf.stop_gradient(save)
-        concat = tf.concat([stop_grad, prev_op], 1, name='concat')
-        aop = save.assign(concat[:,-dilation:,:])
+        prev_z_save = tf.get_variable('lookback_buffer', saved_shape,
+                initializer=tf.zeros_initializer, trainable=False)
+        prev_z_full = tf.concat([prev_z_save, prev_z], 1, name='concat')
 
         # construct signal and gate logic
         v = {}
@@ -98,7 +96,7 @@ class WaveNetTrain(ar.WaveNetArch):
             filt = self.get_variable(arch)
             #abs_mean = tf.reduce_mean(tf.abs(filt))
             #filt = tf.Print(filt, [abs_mean], 'D%i: ' % dilation)
-            v[arch] = tf.nn.convolution(concat, filt, 'VALID',
+            v[arch] = tf.nn.convolution(prev_z_full, filt, 'VALID',
                     [1], [dilation], 'conv')
             if self.use_bias:
                 bias = self.get_variable(arch, True)
@@ -111,6 +109,8 @@ class WaveNetTrain(ar.WaveNetArch):
                 gc_proj = self._map_embeds(id_masks, gc_filt, 'gc_proj_embed')
                 v[a] = tf.add(v[a], gc_proj, 'add')
         
+        # ensure we update prev_z_save before movign on
+        aop = tf.assign(prev_z_save, prev_z[:,-dilation,:])
         with tf.control_dependencies([aop]):
             z = tf.tanh(v[ar.ArchCat.SIGNAL]) * tf.sigmoid(v[ar.ArchCat.GATE])
                 
