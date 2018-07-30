@@ -8,10 +8,10 @@ from tensorflow.python import debug as tf_debug
 
 
 sam_file = 'samples.rdb'
-ckpt_dir = '/home/hrbigelow/ai/ckpt'
-tb_dir = '/home/hrbigelow/ai/tb_events/lb-wavenet'
+ckpt_dir = '/home/hrbigelow/ai/ckpt/lb-wavenet'
+tb_dir = '/home/hrbigelow/ai/tb/lb-wavenet'
 par_dir = '/home/hrbigelow/ai/par'
-arch_file = 'arch4.json'
+arch_file = 'arch3.json'
 par_file = 'par1.json'
 max_steps = 30000 
 add_summary = True
@@ -32,8 +32,6 @@ def main():
 
     with open(par_dir + '/' + par_file, 'r') as fp:
         par = json.load(fp)
-
-    print(arch)
 
     net = tmodel.WaveNetTrain(
             arch['n_blocks'],
@@ -73,16 +71,19 @@ def main():
     make_flusher(fw)
     print('Created training graph.')
 
-    optimizer = tf.train.AdamOptimizer()
+    optimizer = tf.train.AdamOptimizer(learning_rate=par['learning_rate'])
     train_vars = tf.trainable_variables()
+    print('Created optimizer.')
 
     # writing this out explicitly for educational purposes
     global_step = tf.Variable(0, trainable=False)
     grads_and_vars = optimizer.compute_gradients(loss, train_vars)
     apply_grads = optimizer.apply_gradients(grads_and_vars, global_step)
-
+    print('Created gradient ops.')
 
     init = tf.global_variables_initializer()
+    print('Created init op.')
+
     sess.run(init)
     print('Initialized training graph.')
 
@@ -96,8 +97,9 @@ def main():
             print('step, loss: {}\t{}'.format(step, loss_val))
             fw.add_summary(sess.run(summary_op), step)
         if step % 100 == 0:
-            print('Saving checkpoint to %s\n' % arch_file)
-            net.save(sess, ckpt_dir, arch_file, step)
+            path = net.save(sess, ckpt_dir, arch_file, step)
+            print('Saved checkpoint to %s\n' % path)
+
         
 
 

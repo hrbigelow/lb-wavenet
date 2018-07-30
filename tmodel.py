@@ -15,8 +15,8 @@ class WaveNetTrain(ar.WaveNetArch):
             n_post1,
             n_gc_embed,
             n_gc_category,
-            l2_factor,
             use_bias,
+            l2_factor,
             add_summary):
 
         super().__init__(
@@ -33,7 +33,6 @@ class WaveNetTrain(ar.WaveNetArch):
                 add_summary)
 
         self.l2_factor = l2_factor
-        self.saved = []
         
     def get_recep_field_sz(self):
         return self.n_blocks * sum([2**l for l in range(self.n_block_layers)])
@@ -81,16 +80,14 @@ class WaveNetTrain(ar.WaveNetArch):
     def _dilated_conv(self, prev_op, dilation, id_masks, batch_sz): 
         '''construct one dilated, gated convolution as in equation 2 of WaveNet Sept 2016'''
     
+        # !!! 
         # save last postiions from prev_op
-        with tf.name_scope('load_store_values'):
-            saved_shape = [batch_sz, dilation, self.n_res]
-            save = tf.Variable(tf.zeros(saved_shape), name='saved_length%i' % dilation,
-                    trainable=False,
-                    validate_shape=False)
-            stop_grad = tf.stop_gradient(save)
-            concat = tf.concat([stop_grad, prev_op], 1, name='concat')
-            aop = save.assign(concat[:,-dilation:,:])
-        self.saved.append(save)
+        saved_shape = [batch_sz, dilation, self.n_res]
+        save = tf.get_variable('lookback_buffer', shape, initializer=tf.zeros,
+                trainable=False)
+        stop_grad = tf.stop_gradient(save)
+        concat = tf.concat([stop_grad, prev_op], 1, name='concat')
+        aop = save.assign(concat[:,-dilation:,:])
 
         # construct signal and gate logic
         v = {}
@@ -99,8 +96,8 @@ class WaveNetTrain(ar.WaveNetArch):
 
         for arch in sig_gate:
             filt = self.get_variable(arch)
-            abs_mean = tf.reduce_mean(tf.abs(filt))
-            filt = tf.Print(filt, [mean], 'D%i: ' % dilation)
+            #abs_mean = tf.reduce_mean(tf.abs(filt))
+            #filt = tf.Print(filt, [abs_mean], 'D%i: ' % dilation)
             v[arch] = tf.nn.convolution(concat, filt, 'VALID',
                     [1], [dilation], 'conv')
             if self.use_bias:
@@ -172,16 +169,20 @@ class WaveNetTrain(ar.WaveNetArch):
                     logits = logits_out_clip)
             id_mask = tf.stack(id_masks)
             use_mask = tf.cast(tf.not_equal(id_mask[:,1:], 0), tf.float32)
-            cross_ent_filt = cross_ent * use_mask 
+            # cross_ent_filt = cross_ent * use_mask 
+            cross_ent_filt = cross_ent
             mean_cross_ent = tf.reduce_mean(cross_ent_filt)
-            # !!! fix the 'bias' in v.name test
             with tf.name_scope('regularization'):
                 if l2_factor != 0:
                     l2_loss = tf.add_n([tf.nn.l2_loss(v)
                         for v in tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES) 
                         if not ('BIAS' in v.name)])
                 else:
-                    l2_loss = 0
+                    l2_loss = tf.add_n([tf.nn.l2_loss(v)
+                        for v in tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES) 
+                        if not ('BIAS' in v.name)])
+                    # l2_loss = 0
+            mean_cross_ent = tf.Print(mean_cross_ent, [mean_cross_ent, l2_loss], 'M,L: ')
             total_loss = mean_cross_ent + l2_factor * l2_loss
 
         return total_loss

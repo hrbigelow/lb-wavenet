@@ -7,13 +7,13 @@ import json
 batch_sz = 2 
 chunk_sz = 100
 sample_rate = 16000
-log_dir = '/home/hrbigelow/ai/ckpt'
+log_dir = '/home/hrbigelow/ai/ckpt/lb-wavenet'
 par_dir = '/home/hrbigelow/ai/par'
 wav_dir = '/home/hrbigelow/ai/wav'
 
-arch_file = 'arch1.json'
+arch_file = 'arch3.json'
 par_file = 'par1.json'
-ckpt_file = 'arch1-1900' 
+ckpt_file = 'arch3-1900' 
 
 def main():
 
