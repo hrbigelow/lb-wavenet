@@ -11,7 +11,7 @@ sam_file = 'samples.rdb'
 ckpt_dir = '/home/hrbigelow/ai/ckpt/lb-wavenet'
 tb_dir = '/home/hrbigelow/ai/tb/lb-wavenet'
 par_dir = '/home/hrbigelow/ai/par'
-arch_file = 'arch3.json'
+arch_file = 'arch2.json'
 par_file = 'par1.json'
 max_steps = 30000 
 add_summary = True
@@ -45,6 +45,7 @@ def main():
             arch['n_gc_category'],
             arch['use_bias'],
             par['l2_factor'],
+            par['batch_sz'],
             add_summary
             )
     recep_field_sz = net.get_recep_field_sz()
@@ -66,6 +67,8 @@ def main():
     print('Created dataset.')
 
     loss = net.build_graph(wav_input, id_masks, id_maps)
+    print(sess.run(wav_input))
+
     summary_op = tf.summary.merge_all()
     fw = tf.summary.FileWriter(tb_dir, graph=sess.graph)
     make_flusher(fw)

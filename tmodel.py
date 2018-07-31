@@ -17,6 +17,7 @@ class WaveNetTrain(ar.WaveNetArch):
             n_gc_category,
             use_bias,
             l2_factor,
+            batch_sz,
             add_summary):
 
         super().__init__(
@@ -33,23 +34,26 @@ class WaveNetTrain(ar.WaveNetArch):
                 add_summary)
 
         self.l2_factor = l2_factor
+        self.batch_sz = batch_sz
         
     def get_recep_field_sz(self):
         return self.n_blocks * sum([2**l for l in range(self.n_block_layers)])
 
     def encode_input_onehot(self, wav_input):
+        '''
+        wav_input[b][t], batch b, time t
+        wav_input_onehot[b][t][q] for batch b, time t, quant channel q
+        '''
         with tf.name_scope('encode'):
             wav_input_mu = ops.mu_encode(wav_input, self.n_quant)
-            # wav_input_onehot[b][t][i], batch b, time t, category i
             wav_input_onehot = tf.one_hot(wav_input_mu, self.n_quant, axis = -1,
                     name = 'one_hot_input')
         return wav_input_onehot
 
     def _preprocess(self, wav_input_encoded, id_maps):
         '''entry point of data coming from data.Dataset.
-        wav_input[b][t] for batch b, time t'''  
-        with tf.name_scope('config_inputs'):
-            self.batch_sz = tf.shape(wav_input_encoded)[0]
+        wav_input_encoded[b][t][q] for batch b, time t, quant channel q'''  
+        # self.batch_sz = tf.shape(wav_input_encoded)[0]
 
         if self.use_gc:
             # gc_embeds[batch][i] = embedding vector
@@ -77,15 +81,24 @@ class WaveNetTrain(ar.WaveNetArch):
         return tf.stack(gathered)
 
     
-    def _dilated_conv(self, prev_z, dilation, id_masks, batch_sz): 
+    def _dilated_conv(self, prev_z, dilation, id_masks): 
         '''construct one dilated, gated convolution as in equation 2 of WaveNet
-        Sept 2016'''
+        Sept 2016
+        prev_z[b][t][r], for batch b, time t, res channel r
+        '''
     
         # prev_z_save is already populated according to the current window
-        saved_shape = [batch_sz, dilation, self.n_res]
-        prev_z_save = tf.get_variable('lookback_buffer', saved_shape,
-                initializer=tf.zeros_initializer, trainable=False)
-        prev_z_full = tf.concat([prev_z_save, prev_z], 1, name='concat')
+        saved_shape = [self.batch_sz, dilation, self.n_res]
+        prev_z_save = tf.get_variable(
+                name='lookback_buffer',
+                shape=saved_shape,
+                initializer=tf.zeros_initializer,
+                trainable=False
+                )
+        prev_z_rand = tf.random_uniform(saved_shape)
+        prev_z_full = tf.concat([prev_z_rand, prev_z], 1, name='concat')
+
+        # prev_z_full = tf.concat([prev_z_save, prev_z], 1, name='concat')
 
         # construct signal and gate logic
         v = {}
@@ -110,10 +123,11 @@ class WaveNetTrain(ar.WaveNetArch):
                 v[a] = tf.add(v[a], gc_proj, 'add')
         
         # ensure we update prev_z_save before movign on
-        aop = tf.assign(prev_z_save, prev_z[:,-dilation,:])
-        with tf.control_dependencies([aop]):
-            z = tf.tanh(v[ar.ArchCat.SIGNAL]) * tf.sigmoid(v[ar.ArchCat.GATE])
+        #aop = tf.assign(prev_z_save, prev_z[:,-dilation:,:])
+        #with tf.control_dependencies([aop]):
+        #    z = tf.tanh(v[ar.ArchCat.SIGNAL]) * tf.sigmoid(v[ar.ArchCat.GATE])
                 
+        z = tf.tanh(v[ar.ArchCat.SIGNAL]) * tf.sigmoid(v[ar.ArchCat.GATE])
         return z 
 
 
@@ -209,7 +223,7 @@ class WaveNetTrain(ar.WaveNetArch):
                     with tf.variable_scope('layer{}'.format(bl)):
                         l = b * self.n_block_layers + bl
                         dil = 2**bl
-                        dconv = self._dilated_conv(cur, dil, id_masks, self.batch_sz)
+                        dconv = self._dilated_conv(cur, dil, id_masks)
                         sig, skp = self._chan_reduce(dconv)
                         skps.append(skp)
                         cur = tf.add(cur, sig, name='residual_add') 
