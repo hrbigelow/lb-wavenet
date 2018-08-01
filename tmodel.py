@@ -95,9 +95,8 @@ class WaveNetTrain(ar.WaveNetArch):
                 initializer=tf.zeros_initializer,
                 trainable=False
                 )
-        prev_z_rand = tf.random_uniform(saved_shape)
-        prev_z_full = tf.concat([prev_z_rand, prev_z], 1, name='concat')
-
+        # prev_z_rand = tf.random_uniform(saved_shape)
+        prev_z_full = tf.concat([prev_z_save, prev_z], 1, name='concat')
         # prev_z_full = tf.concat([prev_z_save, prev_z], 1, name='concat')
 
         # construct signal and gate logic
@@ -123,11 +122,10 @@ class WaveNetTrain(ar.WaveNetArch):
                 v[a] = tf.add(v[a], gc_proj, 'add')
         
         # ensure we update prev_z_save before movign on
-        #aop = tf.assign(prev_z_save, prev_z[:,-dilation:,:])
-        #with tf.control_dependencies([aop]):
-        #    z = tf.tanh(v[ar.ArchCat.SIGNAL]) * tf.sigmoid(v[ar.ArchCat.GATE])
-                
-        z = tf.tanh(v[ar.ArchCat.SIGNAL]) * tf.sigmoid(v[ar.ArchCat.GATE])
+        # should this have a tf.stop_gradient?  what would that mean?
+        aop = tf.assign(prev_z_save, prev_z_full[:,-dilation:,:])
+        with tf.control_dependencies([aop]):
+            z = tf.tanh(v[ar.ArchCat.SIGNAL]) * tf.sigmoid(v[ar.ArchCat.GATE])
         return z 
 
 
@@ -148,12 +146,14 @@ class WaveNetTrain(ar.WaveNetArch):
     def _postprocess(self, prev_op):
         '''implement the post-processing, just after the '+' sign and
         before the 'ReLU', where all skip connections add together.
-        see section 2.4'''
-        post1_filt = self.get_variable(ar.ArchCat.POST1)
-        post2_filt = self.get_variable(ar.ArchCat.POST2)
+        see section 2.4
+
+        
+        '''
         with tf.name_scope('postprocess'):
             relu1 = tf.nn.relu(prev_op, 'ReLU')
             with tf.name_scope('chan'):
+                post1_filt = self.get_variable(ar.ArchCat.POST1)
                 dense1 = tf.nn.convolution(relu1, post1_filt, 'VALID', [1], [1], 'conv')
                 if self.use_bias:
                     bias = self.get_variable(ar.ArchCat.POST1, True)
@@ -161,13 +161,14 @@ class WaveNetTrain(ar.WaveNetArch):
 
             relu2 = tf.nn.relu(dense1, 'ReLU')
             with tf.name_scope('chan'):
+                post2_filt = self.get_variable(ar.ArchCat.POST2)
                 dense2 = tf.nn.convolution(relu2, post2_filt, 'VALID', [1], [1], 'conv')
                 if self.use_bias:
                     bias = self.get_variable(ar.ArchCat.POST2, True)
                     dense2 = tf.add(dense2, bias, 'add_bias')
 
             with tf.name_scope('softmax'):
-                softmax = tf.nn.softmax(dense2, 0, 'softmax')
+                softmax = tf.nn.softmax(dense2, axis=2, name='softmax')
 
         return dense2, softmax
 
@@ -175,16 +176,17 @@ class WaveNetTrain(ar.WaveNetArch):
     def _loss_fcn(self, wav_input_encoded, logits_out, id_masks, l2_factor):
         '''calculates cross-entropy loss with l2 regularization'''
         with tf.name_scope('loss'):
-            shift_input = wav_input_encoded[:,1:,:]
+            shift_input = tf.stop_gradient(wav_input_encoded[:,1:,:])
             logits_out_clip = logits_out[:,:-1,:]
-
+            
             cross_ent = tf.nn.softmax_cross_entropy_with_logits_v2(
                     labels = shift_input,
-                    logits = logits_out_clip)
+                    logits = logits_out_clip,
+                    dim=2)
             id_mask = tf.stack(id_masks)
             use_mask = tf.cast(tf.not_equal(id_mask[:,1:], 0), tf.float32)
-            # cross_ent_filt = cross_ent * use_mask 
-            cross_ent_filt = cross_ent
+            cross_ent_filt = cross_ent * use_mask 
+            # cross_ent_filt = cross_ent
             mean_cross_ent = tf.reduce_mean(cross_ent_filt)
             with tf.name_scope('regularization'):
                 if l2_factor != 0:
@@ -196,7 +198,8 @@ class WaveNetTrain(ar.WaveNetArch):
                         for v in tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES) 
                         if not ('BIAS' in v.name)])
                     # l2_loss = 0
-            mean_cross_ent = tf.Print(mean_cross_ent, [mean_cross_ent, l2_loss], 'M,L: ')
+            mean_cross_ent = tf.Print(mean_cross_ent,
+                    [mean_cross_ent, l2_loss], 'MeanXEnt, L2: ')
             total_loss = mean_cross_ent + l2_factor * l2_loss
 
         return total_loss
@@ -213,6 +216,8 @@ class WaveNetTrain(ar.WaveNetArch):
         id_maps: list of batch_sz id_maps '''
 
         encoded_input = self.encode_input_onehot(wav_input)
+        encoded_input = tf.stop_gradient(encoded_input)
+
         with tf.variable_scope('preprocess'):
             cur = self._preprocess(encoded_input, id_maps)
         skps = []
@@ -228,9 +233,16 @@ class WaveNetTrain(ar.WaveNetArch):
                         skps.append(skp)
                         cur = tf.add(cur, sig, name='residual_add') 
 
-        skp_all = sum(skps)
+        skp_all = tf.add_n(skps, name='add_skip')
         logits, softmax_out = self._postprocess(skp_all)
         loss = self._loss_fcn(encoded_input, logits, id_masks, self.l2_factor)
+
+        diffs = tf.argmax(encoded_input[:,1:,:], 2) - tf.argmax(softmax_out[:,:-1,:], 2)
+        absdiff = tf.abs(diffs)
+        avg = tf.reduce_mean(absdiff)
+        sum_valid = tf.reduce_sum(id_masks)
+
+        loss = tf.Print(loss, [sum_valid, avg], 'Sum_Masks, Avg_ArgMaxAbsDiff: ', summarize=130)
 
         self.graph_built = True
 

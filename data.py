@@ -39,7 +39,7 @@ class MaskedSliceWav(object):
                 self.sample_catalog.append([int(vid), wav_path])
 
 
-    def _gen_sample_map(self):
+    def _gen_path(self):
         '''load a sample file with the format:
         voice_id /path/to/file1.wav
         voice_id /path/to/file2.wav
@@ -55,12 +55,12 @@ class MaskedSliceWav(object):
     def _read_wav_file(self, wav_file):
         '''read the contents of a wav file, returning np.ndarray'''
         audio, _ = librosa.load(wav_file, sr=self.sample_rate, mono=True)
-        # print('Reading %s' % wav_file)
+        print('Reading %s' % wav_file)
         #audio = audio.reshape(-1, 1)
         return audio
 
 
-    def _gen_wav_files(self, path_itr, sess):
+    def _wav_gen(self, path_itr, sess):
         '''consume an iterator that yields [voice_id, wav_path].
         load the .wav file contents into a vector and return a tuple
         generate tuples (voice_id, [wav_val, wav_val, ...])
@@ -76,10 +76,12 @@ class MaskedSliceWav(object):
         return
 
 
-    def _gen_concat_slice_factory(self, sess):
-        '''factory function for creating a new generator'''
+    def _gen_concat_slice_factory(self, wav_gen):
+        '''factory function for creating a new generator
+        wav_gen: generates next (vid, wav) pair
+        '''
 
-        def gen_fcn(wav_itr):
+        def gen_fcn():
             '''generates a slice from a virtually concatenated set of .wav files.
             consume itr, which yields [voice_id, wav_data]
 
@@ -96,14 +98,13 @@ class MaskedSliceWav(object):
             need_sz = self.slice_sz 
             spliced_wav = np.empty(0, np.float)
             spliced_ids = np.empty(0, np.int32)
-            next_el = wav_itr.get_next()
             recep_bound = self.recep_field_sz - 1
-            idmap = [0]
+            idmap = np.array([0], np.int32)
 
             while True:
                 try:
-                    (vid, wav) = sess.run(next_el)
-                except tf.errors.OutOfRangeError:
+                    vid, wav = next(wav_gen) 
+                except StopIteration:
                     break
                 wav_sz = wav.shape[0] 
                 if wav_sz < self.recep_field_sz:
@@ -112,9 +113,9 @@ class MaskedSliceWav(object):
                             % (wav_sz, vid, self.recep_field_sz))
                     continue
                 try:
-                    mid = idmap.index(vid)
+                    mid = idmap.tolist().index(vid)
                 except ValueError:
-                    idmap += vid
+                    idmap = np.append(idmap, vid)
                     mid = len(idmap) - 1
 
                 slice_bound = min(need_sz, wav_sz)
@@ -129,16 +130,17 @@ class MaskedSliceWav(object):
                 cur_item_pos = 0
                 
                 while need_sz <= (wav_sz - cur_item_pos):
-                    print(str(need_sz) + ', ' + str(wav_sz - cur_item_pos))
+                    # print(str(need_sz) + ', ' + str(wav_sz - cur_item_pos))
                     # use up a chunk of the current item and yield the slice
                     spliced_wav = np.append(spliced_wav, wav[cur_item_pos:cur_item_pos + need_sz])
                     spliced_ids = np.append(spliced_ids, ids[cur_item_pos:cur_item_pos + need_sz])
                     cur_item_pos += need_sz 
-                    yield (spliced_wav, spliced_ids, idmap) 
+                    yield spliced_wav, spliced_ids, idmap 
                     spliced_wav = np.empty(0, np.float) 
                     spliced_ids = np.empty(0, np.int32)
-                    idmap = [0, vid]
+                    idmap = np.array([0, vid], np.int32)
                     need_sz = self.slice_sz 
+
                 if cur_item_pos != wav_sz:
                     # append this piece of wav to the current slice 
                     spliced_wav = np.append(spliced_wav, wav[cur_item_pos:])
@@ -148,16 +150,36 @@ class MaskedSliceWav(object):
         return gen_fcn
 
 
-    def _gen_slice_batch(self, wav_itr, sess):
-        '''generates a batch of concatenated slices'''
+    def _gen_slice_batch(self, path_itr, sess):
+        '''generates a batch of concatenated slices
+        yields:
+        wav[b][t] = amplitude
+        ids[b][t] = mid or zero (mask)
+        idmap[b][mid] = vid
+        b = batch, t = timestep
+        '''
+        # construct the single (vid, wav) generator
+        wav_gen = self._wav_gen(path_itr, sess)
 
-        # construct the generators
-        gens = [self.gen_concat_slice_factory(sess) for _ in range(self.batch_sz)]
+        # construct batch_sz slice generators, each sharing the same wav_gen
+        gens = [self._gen_concat_slice_factory(wav_gen)() for _ in range(self.batch_sz)]
+
         while True:
             try:
-                batch = [g(wav_itr) for g in gens]
-                yield batch
-            except tf.errors.OutOfRangeError:
+                batch = [next(g) for g in gens]
+                wav = np.stack([b[0] for b in batch])
+                ids = np.stack([b[1] for b in batch])
+                idmaps = [b[2] for b in batch]
+                idmaps_len = [m.shape[0] for m in idmaps]
+                ml = max(idmaps_len)
+
+                # pad each with zeros at the end so we can stack
+                pairs = zip(idmaps, idmaps_len)
+                idmaps_pad = [np.pad(m, ((0, ml - l),), mode='constant') for m,l in pairs]
+                idmap = np.stack(idmaps_pad)
+                yield wav, ids, idmap 
+            except StopIteration:
+                # this will be raised if wav_itr runs out
                 break
 
 
@@ -172,41 +194,27 @@ class MaskedSliceWav(object):
         returns:
             wav: ['''
         zero_d = tf.TensorShape([])
-        one_d = tf.TensorShape([None])
         two_d = tf.TensorShape([self.batch_sz, None])
 
         with tf.name_scope('dataset'):
             with tf.name_scope('sample_map'):
-                d1 = tf.data.Dataset.from_generator(
-                        self._gen_sample_map,
+                path_ds = tf.data.Dataset.from_generator(
+                        self._gen_path,
                         (tf.int32, tf.string),
                         (zero_d, zero_d))
 
-            with tf.name_scope('arranging'):
-                d2 = d1 # do shuffling and repetition here
-                i2 = d2.make_one_shot_iterator()
-
-            with tf.name_scope('reading_files'):
-                d3 = tf.data.Dataset.from_generator(
-                        lambda: self._gen_wav_files(i2, sess),
-                        (tf.int32, tf.float32), (zero_d, one_d))
-                i3 = d3.make_one_shot_iterator()
+            with tf.name_scope('shuffle_repeat'):
+                path_shuf_ds = path_ds.shuffle(buffer_size=len(self.sample_catalog))
+                path_shuf_itr = path_shuf_ds.make_one_shot_iterator()
 
             with tf.name_scope('slice_batch'):
-                d4 = tf.data.Dataset.from_generator(
-                        lambda: self._gen_slice_batch(i3, sess),
-                        (tf.float32, tf.int32, tf.int32), (two_d, two_d, two_d))
+                slice_batch_ds = tf.data.Dataset.from_generator(
+                        lambda: self._gen_slice_batch(path_shuf_itr, sess),
+                        (tf.float32, tf.int32, tf.int32),
+                        (two_d, two_d, two_d))
+                slice_batch_itr = slice_batch_ds.make_one_shot_iterator()
 
-            slices = d4.make_one_shot_iterator().get_next()
-
-            /*
-            with tf.name_scope('batching'):
-                slices = [d4.make_one_shot_iterator().get_next()
-                        for _ in range(self.batch_sz)]
-                wav = tf.stack([s[0] for s in slices])
-                ids = [s[1] for s in slices]
-                id_maps = [s[2] for s in slices]
-                */
-
-        return [wav, ids, id_maps] 
+            wav, ids, idmap = slice_batch_itr.get_next()
+        return wav, ids, idmap
+            
 

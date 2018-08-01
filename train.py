@@ -7,11 +7,11 @@ import signal
 from tensorflow.python import debug as tf_debug
 
 
-sam_file = 'samples.rdb'
+sam_file = '/home/hrbigelow/ai/data/vctk_samples.rdb'
 ckpt_dir = '/home/hrbigelow/ai/ckpt/lb-wavenet'
 tb_dir = '/home/hrbigelow/ai/tb/lb-wavenet'
 par_dir = '/home/hrbigelow/ai/par'
-arch_file = 'arch2.json'
+arch_file = 'arch3.json'
 par_file = 'par1.json'
 max_steps = 30000 
 add_summary = True
@@ -61,13 +61,15 @@ def main():
     dset.init_sample_catalog()
 
     sess = tf.Session()
-    # sess = tf_debug.LocalCLIDebugWrapperSession(sess)
 
-    (wav_input, id_masks, id_maps) = dset.wav_dataset(sess)
+    wav_input, id_masks, id_maps = dset.wav_dataset(sess)
     print('Created dataset.')
 
+    # Note that tfdbg can't run if this is before dset.wav_dataset call
+    # sess = tf_debug.LocalCLIDebugWrapperSession(sess)
+
     loss = net.build_graph(wav_input, id_masks, id_maps)
-    print(sess.run(wav_input))
+    # print(sess.run(wav_input))
 
     summary_op = tf.summary.merge_all()
     fw = tf.summary.FileWriter(tb_dir, graph=sess.graph)
@@ -76,23 +78,19 @@ def main():
 
     optimizer = tf.train.AdamOptimizer(learning_rate=par['learning_rate'])
     train_vars = tf.trainable_variables()
-    print('Created optimizer.')
 
     # writing this out explicitly for educational purposes
     global_step = tf.Variable(0, trainable=False)
     grads_and_vars = optimizer.compute_gradients(loss, train_vars)
     apply_grads = optimizer.apply_gradients(grads_and_vars, global_step)
-    print('Created gradient ops.')
 
     init = tf.global_variables_initializer()
-    print('Created init op.')
-
     sess.run(init)
     print('Initialized training graph.')
 
     sess.run(global_step.initializer)
 
-    print('Starting training')
+    print('Starting training...')
     step = 0
     while step < max_steps:
         _, step, loss_val = sess.run([apply_grads, global_step, loss])
@@ -105,8 +103,6 @@ def main():
 
         
 
-
 if __name__ == '__main__':
     main()
-
 

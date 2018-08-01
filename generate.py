@@ -13,7 +13,7 @@ wav_dir = '/home/hrbigelow/ai/wav'
 
 arch_file = 'arch3.json'
 par_file = 'par1.json'
-ckpt_file = 'arch3-1900' 
+ckpt_file = 'arch3-1600' 
 
 def main():
 
@@ -30,6 +30,7 @@ def main():
             arch['n_post1'],
             arch['n_gc_embed'],
             arch['n_gc_category'],
+            arch['use_bias'],
             batch_sz,
             chunk_sz)
 

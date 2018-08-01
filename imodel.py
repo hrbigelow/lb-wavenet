@@ -15,6 +15,7 @@ class WaveNetGen(ar.WaveNetArch):
             n_post1,
             n_gc_embed,
             n_gc_category,
+            use_bias,
             batch_sz,
             chunk_sz):
 
@@ -28,6 +29,7 @@ class WaveNetGen(ar.WaveNetArch):
                 n_post1,
                 n_gc_embed,
                 n_gc_category,
+                use_bias,
                 add_summary=False)
 
         self.chunk_sz = chunk_sz
@@ -56,19 +58,26 @@ class WaveNetGen(ar.WaveNetArch):
         return pre_op
 
 
-    def _dilated_conv(self, src_buf, prev_val, pos):
+    def _dilated_conv(self, prev_z, pos):
         '''
         pos: zero-based position in the cached window
-        prev_val: value from previous layer at time t 
+        prev_z: value from previous layer at time t 
         '''
+        saved_shape = [self.batch_sz, dil + self.chunk_sz, self.n_res]
+        prev_z_save = tf.get_variable(
+                name='lookback_buffer',
+                shape=saved_shape,
+                initializer=tf.zeros_initializer,
+                trainable=False,
+                collections=lookback_bufs)
         v = {}
         sig_gate = [ar.ArchCat.SIGNAL, ar.ArchCat.GATE]
         sig_gate_gc = [ar.ArchCat.GC_SIGNAL, ar.ArchCat.GC_GATE]
 
         for arch in sig_gate:
             filt = self.get_variable(arch)
-            v[arch] = tf.matmul(src_buf[:,pos,:], filt[0]) \
-            + tf.matmul(prev_val, filt[1])
+            v[arch] = tf.matmul(prev_z_save[:,pos,:], filt[0]) \
+            + tf.matmul(prev_z, filt[1])
 
         if self.use_gc:
             for a, g in zip(sig_gate, sig_gate_gc): 
@@ -180,24 +189,20 @@ class WaveNetGen(ar.WaveNetArch):
 
         skps = []
         for b in range(self.n_blocks):
-            for bl in range(self.n_block_layers):
-                l = b * self.n_block_layers + bl
-                dil = 2**bl
-                with tf.variable_scope('dconv{}'.format(l), reuse=None):
-                    dst_buf = tf.get_variable('lookback',
-                            [self.batch_sz, dil + self.chunk_sz, self.n_res],
-                            initializer=tf.zeros_initializer,
-                            trainable=False,
-                            collections=lookback_bufs)
-                    dconv = self._dilated_conv(cur_buf, cur, wpos)
-                    sig, skp = self._chan_reduce(dconv)
-                    cur = tf.add(cur, sig, name='residual_add')
-                    skps.append(skp)
-                    aop = tf.assign(dst_buf[wpos + dil], cur)
-                    with tf.control_dependencies([aop]):
-                        cur_buf = dst_buf # will this work?  doesn't seem like it...
+            with tf.variable_scope('block{}'.format(b)):
+                for bl in range(self.n_block_layers):
+                    with tf.variable_scope('layer{}'.format(bl)):
+                        l = b * self.n_block_layers + bl
+                        dil = 2**bl
+                        dconv = self._dilated_conv(cur, dil, wpos)
+                        sig, skp = self._chan_reduce(dconv)
+                        cur = tf.add(cur, sig, name='residual_add')
+                        skps.append(skp)
+                        aop = tf.assign(dst_buf[wpos + dil], cur)
+                        with tf.control_dependencies([aop]):
+                            cur_buf = dst_buf # will this work?  doesn't seem like it...
 
-        skp_all = sum(skps)
+        skp_all = tf.add_n(skps, name='add_skip')
         logits, softmax_out = self._postprocess(skp_all)
         with tf.variable_scope('postprocess', reuse=None):
             wav_buf = tf.get_variable('output',
