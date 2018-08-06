@@ -15,6 +15,7 @@
 import librosa
 import tensorflow as tf
 import numpy as np
+from sys import stderr
 
 class MaskedSliceWav(object):
 
@@ -55,7 +56,7 @@ class MaskedSliceWav(object):
     def _read_wav_file(self, wav_file):
         '''read the contents of a wav file, returning np.ndarray'''
         audio, _ = librosa.load(wav_file, sr=self.sample_rate, mono=True)
-        print('Reading %s' % wav_file)
+        print('Reading %s' % wav_file, file=stderr)
         #audio = audio.reshape(-1, 1)
         return audio
 
@@ -186,11 +187,6 @@ class MaskedSliceWav(object):
     def wav_dataset(self, sess):
         '''parse a sample file and create a ts.data.Dataset of concatenated,
         labeled slices from it.
-        d1 items are (voice_id, wav_path)
-        d2 items are just d1 items shuffled and repeated
-        d3 items are (voice_id, [wav_val, wav_val, ...])
-        d4 items are (spliced_wav, spliced_ids, idmap)
-
         returns:
             wav: ['''
         zero_d = tf.TensorShape([])

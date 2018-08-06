@@ -4,13 +4,18 @@ import data
 import tensorflow as tf
 import json
 import signal
+import argparse
+import contextlib
 from tensorflow.python import debug as tf_debug
+from tensorflow.python.client import timeline
+import tests
+from sys import stderr
 
-
-sam_file = '/home/hrbigelow/ai/data/vctk_samples.rdb'
-ckpt_dir = '/home/hrbigelow/ai/ckpt/lb-wavenet'
-tb_dir = '/home/hrbigelow/ai/tb/lb-wavenet'
-par_dir = '/home/hrbigelow/ai/par'
+ai_dir = '/home/hrbigelow/ai/'
+sam_file = ai_dir + 'data/vctk_samples.rdb'
+ckpt_dir = ai_dir + 'ckpt/lb-wavenet'
+tb_dir = ai_dir + 'tb/lb-wavenet'
+par_dir = ai_dir + 'par'
 arch_file = 'arch3.json'
 par_file = 'par1.json'
 max_steps = 30000 
@@ -24,13 +29,29 @@ def make_flusher(file_writer):
         exit(1)
     signal.signal(signal.Signals.SIGINT, cleanup) 
 
+def get_args():
+    parser = argparse.ArgumentParser(description='WaveNet')
+    parser.add_argument('--timeline-file', type=str,
+            help='Enable profiling and write info to <timeline_file>')
+    parser.add_argument('--prof-dir', type=str,
+            help='Output profiling events to <prof_dir> for use with ' +
+            'TensorFlow Profiler')
+    parser.add_argument('--par-dir', type=str, default=par_dir,
+            help='Directory containing parameter files for <arch_file> and <par_file>')
+    parser.add_argument('--arch-file', type=str, default=arch_file,
+            help='JSON file specifying architectural parameters')
+    parser.add_argument('--par-file', type=str, default=par_file,
+            help='JSON file specifying training and other hyperparameters')
+    return parser.parse_args()
+
 
 def main():
+    args = get_args()
 
-    with open(par_dir + '/' + arch_file, 'r') as fp:
+    with open(args.par_dir + '/' + args.arch_file, 'r') as fp:
         arch = json.load(fp)
 
-    with open(par_dir + '/' + par_file, 'r') as fp:
+    with open(args.par_dir + '/' + args.par_file, 'r') as fp:
         par = json.load(fp)
 
     net = tmodel.WaveNetTrain(
@@ -50,6 +71,7 @@ def main():
             )
     recep_field_sz = net.get_recep_field_sz()
 
+
     dset = data.MaskedSliceWav(
             sam_file,
             par['batch_sz'],
@@ -60,48 +82,77 @@ def main():
 
     dset.init_sample_catalog()
 
-    sess = tf.Session()
+    with contextlib.ExitStack() as stack:
+        if args.prof_dir is not None:
+            ctx = tf.contrib.tfprof.ProfileContext(args.prof_dir)
+            ctx_obj = stack.enter_context(ctx)
 
-    wav_input, id_masks, id_maps = dset.wav_dataset(sess)
-    print('Created dataset.')
+        sess = tf.Session()
+        # sess = tf.Session(config=tf.ConfigProto(log_device_placement=True))
 
-    # Note that tfdbg can't run if this is before dset.wav_dataset call
-    # sess = tf_debug.LocalCLIDebugWrapperSession(sess)
+        wav_input, id_masks, id_maps = dset.wav_dataset(sess)
+        print('Created dataset.', file=stderr)
 
-    loss = net.build_graph(wav_input, id_masks, id_maps)
-    # print(sess.run(wav_input))
+        # Note that tfdbg can't run if this is before dset.wav_dataset call
+        # sess = tf_debug.LocalCLIDebugWrapperSession(sess)
 
-    summary_op = tf.summary.merge_all()
-    fw = tf.summary.FileWriter(tb_dir, graph=sess.graph)
-    make_flusher(fw)
-    print('Created training graph.')
+        loss = net.build_graph(wav_input, id_masks, id_maps)
+        # print(sess.run(wav_input))
 
-    optimizer = tf.train.AdamOptimizer(learning_rate=par['learning_rate'])
-    train_vars = tf.trainable_variables()
+        summary_op = tf.summary.merge_all()
+        fw = tf.summary.FileWriter(tb_dir, graph=sess.graph)
+        make_flusher(fw)
+        print('Created training graph.', file=stderr)
 
-    # writing this out explicitly for educational purposes
-    global_step = tf.Variable(0, trainable=False)
-    grads_and_vars = optimizer.compute_gradients(loss, train_vars)
-    apply_grads = optimizer.apply_gradients(grads_and_vars, global_step)
+        optimizer = tf.train.AdamOptimizer(learning_rate=par['learning_rate'])
+        train_vars = tf.trainable_variables()
 
-    init = tf.global_variables_initializer()
-    sess.run(init)
-    print('Initialized training graph.')
+        # writing this out explicitly for educational purposes
+        global_step = tf.Variable(0, trainable=False)
+        grads_and_vars = optimizer.compute_gradients(loss, train_vars)
+        apply_grads = optimizer.apply_gradients(grads_and_vars, global_step)
 
-    sess.run(global_step.initializer)
+        #for op in tf.get_default_graph().get_operations():
 
-    print('Starting training...')
-    step = 0
-    while step < max_steps:
-        _, step, loss_val = sess.run([apply_grads, global_step, loss])
-        if step % 10 == 0:
-            print('step, loss: {}\t{}'.format(step, loss_val))
-            fw.add_summary(sess.run(summary_op), step)
-        if step % 100 == 0:
-            path = net.save(sess, ckpt_dir, arch_file, step)
-            print('Saved checkpoint to %s\n' % path)
+        #print(tf.get_default_graph().as_graph_def())
+        #exit(0)
 
+        init = tf.global_variables_initializer()
+        sess.run(init)
+        print('Initialized training graph.', file=stderr)
         
+        #ts = tests.get_tensor_sizes(sess)
+        #for t in ts:
+        #    print('{}\t{}\t{}\t{}'.format(t[0], t[1], t[2], t[3].size))
+        #exit(1)
+
+        sess.run(global_step.initializer)
+
+        print('Starting training...', file=stderr)
+           
+        step = 0
+        while step < max_steps:
+            if step == 5 and args.timeline_file is not None:
+                options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
+                run_metadata = tf.RunMetadata()
+                _, step, _ = sess.run([apply_grads, global_step, loss],
+                        options=options,
+                        run_metadata=run_metadata)
+                
+                fetched_timeline = timeline.Timeline(run_metadata.step_stats)
+                chrome_trace = fetched_timeline.generate_chrome_trace_format()
+                with open(args.timeline_file, 'w') as f:
+                    f.write(chrome_trace)
+
+            else:
+                _, step, loss_val = sess.run([apply_grads, global_step, loss])
+            if step % 10 == 0:
+                print('step, loss: {}\t{}'.format(step, loss_val), file=stderr)
+                fw.add_summary(sess.run(summary_op), step)
+            if step % 100 == 0:
+                path = net.save(sess, ckpt_dir, arch_file, step)
+                print('Saved checkpoint to %s\n' % path, file=stderr)
+
 
 if __name__ == '__main__':
     main()
