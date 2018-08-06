@@ -1,27 +1,11 @@
 # training functions
-import tmodel
-import data
-import tensorflow as tf
-import json
-import signal
-import argparse
-import contextlib
-from tensorflow.python import debug as tf_debug
-from tensorflow.python.client import timeline
-import tests
-from sys import stderr
 
-ai_dir = '/home/hrbigelow/ai/'
-sam_file = ai_dir + 'data/vctk_samples.rdb'
-ckpt_dir = ai_dir + 'ckpt/lb-wavenet'
-tb_dir = ai_dir + 'tb/lb-wavenet'
-par_dir = ai_dir + 'par'
-arch_file = 'arch3.json'
-par_file = 'par1.json'
+base = '/home/hrbigelow/ai/'
+tb_dir = base + 'tb/lb-wavenet'
 max_steps = 30000 
-add_summary = True
 
 def make_flusher(file_writer):
+    import signal
     def cleanup(sig, frame):
         print('Flushing file_writer...', end='')
         file_writer.flush()
@@ -30,28 +14,48 @@ def make_flusher(file_writer):
     signal.signal(signal.Signals.SIGINT, cleanup) 
 
 def get_args():
+    import argparse
     parser = argparse.ArgumentParser(description='WaveNet')
     parser.add_argument('--timeline-file', type=str,
             help='Enable profiling and write info to <timeline_file>')
-    parser.add_argument('--prof-dir', type=str,
+    parser.add_argument('--prof-dir', type=str, metavar='DIR',
             help='Output profiling events to <prof_dir> for use with ' +
             'TensorFlow Profiler')
-    parser.add_argument('--par-dir', type=str, default=par_dir,
-            help='Directory containing parameter files for <arch_file> and <par_file>')
-    parser.add_argument('--arch-file', type=str, default=arch_file,
+    parser.add_argument('--ckpt-pfx', type=str, metavar='STR',
+            help='Resume training from <ckpt_dir>/<pfx>.{meta,index,data-..}')
+    parser.add_argument('--add-summary', action='store_true',
+            help='If present, add summary histogram nodes to graph for TensorBoard')
+    parser.add_argument('arch_file', type=str, metavar='ARCH_FILE',
             help='JSON file specifying architectural parameters')
-    parser.add_argument('--par-file', type=str, default=par_file,
+    parser.add_argument('par_file', type=str, metavar='PAR_FILE',
             help='JSON file specifying training and other hyperparameters')
+    parser.add_argument('sam_file', type=str, metavar='SAMPLES_FILE',
+            help='File containing lines:\n'
+            + '<id>\t/path/to/sample1.wav\n'
+            + '<id2>\t/path/to/sample2.wav\n')
+    parser.add_argument('ckpt_dir', type=str, metavar='CKPT_DIR',
+            help='Directory for all checkpoints')
+
     return parser.parse_args()
 
 
 def main():
     args = get_args()
 
-    with open(args.par_dir + '/' + args.arch_file, 'r') as fp:
+    import tmodel
+    import data
+    import tensorflow as tf
+    import json
+    import contextlib
+    from tensorflow.python import debug as tf_debug
+    from tensorflow.python.client import timeline
+    import tests
+    from sys import stderr
+
+    with open(args.arch_file, 'r') as fp:
         arch = json.load(fp)
 
-    with open(args.par_dir + '/' + args.par_file, 'r') as fp:
+    with open(args.par_file, 'r') as fp:
         par = json.load(fp)
 
     net = tmodel.WaveNetTrain(
@@ -67,13 +71,13 @@ def main():
             arch['use_bias'],
             par['l2_factor'],
             par['batch_sz'],
-            add_summary
+            args.add_summary
             )
     recep_field_sz = net.get_recep_field_sz()
 
 
     dset = data.MaskedSliceWav(
-            sam_file,
+            args.sam_file,
             par['batch_sz'],
             par['sample_rate'],
             par['slice_sz'],
@@ -97,9 +101,15 @@ def main():
         # sess = tf_debug.LocalCLIDebugWrapperSession(sess)
 
         loss = net.build_graph(wav_input, id_masks, id_maps)
+
+        if args.ckpt_pfx: 
+            ckpt_path = '{}/{}'.format(args.ckpt_dir.rstrip('/'), args.ckpt_pfx.lstrip('/'))
+            print('Restoring from {}'.format(ckpt_path))
+            net.restore(sess, ckpt_path) 
         # print(sess.run(wav_input))
 
         summary_op = tf.summary.merge_all()
+
         fw = tf.summary.FileWriter(tb_dir, graph=sess.graph)
         make_flusher(fw)
         print('Created training graph.', file=stderr)
@@ -148,9 +158,10 @@ def main():
                 _, step, loss_val = sess.run([apply_grads, global_step, loss])
             if step % 10 == 0:
                 print('step, loss: {}\t{}'.format(step, loss_val), file=stderr)
-                fw.add_summary(sess.run(summary_op), step)
+                if summary_op is not None:
+                    fw.add_summary(sess.run(summary_op), step)
             if step % 100 == 0:
-                path = net.save(sess, ckpt_dir, arch_file, step)
+                path = net.save(sess, args.ckpt_dir, args.arch_file, step)
                 print('Saved checkpoint to %s\n' % path, file=stderr)
 
 
