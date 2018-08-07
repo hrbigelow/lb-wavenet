@@ -2,7 +2,7 @@
 
 base = '/home/hrbigelow/ai/'
 tb_dir = base + 'tb/lb-wavenet'
-max_steps = 30000 
+max_steps = 300000 
 
 def make_flusher(file_writer):
     import signal
@@ -22,9 +22,16 @@ def get_args():
             help='Output profiling events to <prof_dir> for use with ' +
             'TensorFlow Profiler')
     parser.add_argument('--ckpt-pfx', type=str, metavar='STR',
-            help='Resume training from <ckpt_dir>/<pfx>.{meta,index,data-..}')
+            help='Prefix for loading or storing checkpoint files')
+    parser.add_argument('--resume-step', '-r', type=int, metavar='INT',
+            help='Resume training from '
+            + 'CKPT_DIR/<ckpt_pfx>-<resume_step>.{meta,index,data-..}')
     parser.add_argument('--add-summary', action='store_true',
             help='If present, add summary histogram nodes to graph for TensorBoard')
+
+    # positional arguments
+    parser.add_argument('ckpt_dir', type=str, metavar='CKPT_DIR',
+            help='Directory for all checkpoints')
     parser.add_argument('arch_file', type=str, metavar='ARCH_FILE',
             help='JSON file specifying architectural parameters')
     parser.add_argument('par_file', type=str, metavar='PAR_FILE',
@@ -33,8 +40,6 @@ def get_args():
             help='File containing lines:\n'
             + '<id>\t/path/to/sample1.wav\n'
             + '<id2>\t/path/to/sample2.wav\n')
-    parser.add_argument('ckpt_dir', type=str, metavar='CKPT_DIR',
-            help='Directory for all checkpoints')
 
     return parser.parse_args()
 
@@ -51,12 +56,15 @@ def main():
     from tensorflow.python.client import timeline
     import tests
     from sys import stderr
+    from os.path import join as path_join
 
     with open(args.arch_file, 'r') as fp:
         arch = json.load(fp)
 
     with open(args.par_file, 'r') as fp:
         par = json.load(fp)
+
+    ckpt_path = path_join(args.ckpt_dir, args.ckpt_pfx) 
 
     net = tmodel.WaveNetTrain(
             arch['n_blocks'],
@@ -81,6 +89,7 @@ def main():
             par['batch_sz'],
             par['sample_rate'],
             par['slice_sz'],
+            par['prefetch_sz'],
             recep_field_sz
             )
 
@@ -102,10 +111,10 @@ def main():
 
         loss = net.build_graph(wav_input, id_masks, id_maps)
 
-        if args.ckpt_pfx: 
-            ckpt_path = '{}/{}'.format(args.ckpt_dir.rstrip('/'), args.ckpt_pfx.lstrip('/'))
-            print('Restoring from {}'.format(ckpt_path))
-            net.restore(sess, ckpt_path) 
+        if args.resume_step: 
+            ckpt = '{}-{}'.format(ckpt_path, args.resume_step)
+            print('Restoring from {}'.format(ckpt))
+            net.restore(sess, ckpt) 
         # print(sess.run(wav_input))
 
         summary_op = tf.summary.merge_all()
@@ -118,14 +127,11 @@ def main():
         train_vars = tf.trainable_variables()
 
         # writing this out explicitly for educational purposes
-        global_step = tf.Variable(0, trainable=False)
+        step = args.resume_step or 0
+        global_step = tf.Variable(step, trainable=False)
         grads_and_vars = optimizer.compute_gradients(loss, train_vars)
         apply_grads = optimizer.apply_gradients(grads_and_vars, global_step)
 
-        #for op in tf.get_default_graph().get_operations():
-
-        #print(tf.get_default_graph().as_graph_def())
-        #exit(0)
 
         init = tf.global_variables_initializer()
         sess.run(init)
@@ -140,7 +146,6 @@ def main():
 
         print('Starting training...', file=stderr)
            
-        step = 0
         while step < max_steps:
             if step == 5 and args.timeline_file is not None:
                 options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
@@ -161,7 +166,7 @@ def main():
                 if summary_op is not None:
                     fw.add_summary(sess.run(summary_op), step)
             if step % 100 == 0:
-                path = net.save(sess, args.ckpt_dir, args.arch_file, step)
+                path = net.save(sess, ckpt_path, step)
                 print('Saved checkpoint to %s\n' % path, file=stderr)
 
 

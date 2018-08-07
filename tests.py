@@ -24,18 +24,39 @@ def mu(wav_in, sample_rate, n_quanta, wav_out):
     print('Sum squared error: ' + str(sum(pow(audio - audio_dec, 2))))
 
 
-def get_tensor_sizes(sess):
+def get_tensor_sizes(sess, feed_dict):
     '''compute a summary of (name, num_elems, dtype)
-    for all nodes in graph'''
-    ind = []
+    for all nodes in graph:
+    summary[i] = (name, size, shape_string, dtype)'''
+    summary = []
     for op in sess.graph.get_operations():
         for ten in op.outputs:
-            ind.append((ten.name, tf.shape(ten), tf.size(ten), ten.dtype))
-    shape_ops = [e[1] for e in ind]
-    size_ops = [e[2] for e in ind]
-    sizes = sess.run(size_ops)
-    shapes = sess.run(shape_ops)
-    summary = [(i[0], z, np.array_str(s), i[3]) for i,z,s in zip(ind, sizes, shapes)]
+            try:
+                item = (ten.name, str(ten.shape.as_list()),
+                ten.shape.num_elements(), ten.dtype.size)
+            except ValueError:
+                item = (ten.name, '?', '?', '?')
+
+            summary.append(item)
     return summary
 
+
+def test_dataset(sess, **kwargs):
+    import data
+    dset = data.MaskedSliceWav(
+            kwargs['sam_file'],
+            kwargs['batch_sz'],
+            kwargs['sample_rate'],
+            kwargs['slice_sz'],
+            kwargs['prefetch_sz'],
+            kwargs['recep_field_sz']
+            )
+    dset.init_sample_catalog()
+    print('Creating dataset...', end='', flush=True)
+    dset_ops = dset.wav_dataset(sess)
+    print('done')
+    print('Running ops {}...'.format(str(dset_ops)), end='', flush=True)
+    wav, mask, maps = sess.run(dset_ops)
+    print('done')
+    print(len(wav))
 

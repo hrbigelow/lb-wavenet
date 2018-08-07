@@ -123,19 +123,29 @@ class WaveNetArch(object):
         m = re.fullmatch('(.+)\.json', json_file)
         return m.group(1)
 
-    def save(self, sess, log_dir, arch_json, step):
+    def save(self, sess, arch_pfx, step):
         '''saves trainable variables, generating a special filename
         that encodes architectural parameters'''
         self._maybe_init_saver()
-        arch = self._json_stem(arch_json)
-        save_path = '{}/{}'.format(log_dir, arch)
-        path_pfx = self.saver.save(sess, save_path, step)
+        path_pfx = self.saver.save(sess, arch_pfx, step)
         return path_pfx
+
+    @staticmethod
+    def expand_ckpt(ckpt):
+        '''expand ckpt into list of ckpt files that the writer would generate'''
+        suffixes = ['index', 'meta', 'data-00000-of-00001']
+        return ['{}.{}'.format(ckpt, s) for s in suffixes]
 
 
     def restore(self, sess, ckpt_file):
         '''finds the appropriate checkpoint file saved by 'save' and loads into
         the existing graph'''
+        from sys import stderr
+        from os import access, R_OK
+        for fn in self.expand_ckpt(ckpt_file):
+            if not access(fn, R_OK):
+                print("Couldn't find checkpoint file {}".format(fn), file=stderr)
+                exit(1)
         self._maybe_init_saver()
         self.saver.restore(sess, ckpt_file)
     

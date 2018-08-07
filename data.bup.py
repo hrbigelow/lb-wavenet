@@ -25,7 +25,7 @@ class MaskedSliceWav(object):
             sample_rate, 
             slice_sz,
             recep_field_sz,
-            prefetch_sz
+            prefetch_sz,
             ):
         self.sam_file = sam_file
         self.batch_sz = batch_sz
@@ -169,7 +169,6 @@ class MaskedSliceWav(object):
 
         while True:
             try:
-                # this is probably expensive
                 batch = [next(g) for g in gens]
                 wav = np.stack([b[0] for b in batch])
                 ids = np.stack([b[1] for b in batch])
@@ -205,22 +204,17 @@ class MaskedSliceWav(object):
             with tf.name_scope('shuffle_repeat'):
                 ds = ds.shuffle(buffer_size=len(self.sample_catalog))
                 itr = ds.make_one_shot_iterator()
-                # used this so a reassignment of 'itr' doesn't break the code
-                def gen_wrap():
-                    return self._gen_slice_batch(gen_wrap.itr, sess)
-                gen_wrap.itr = itr
 
             with tf.name_scope('slice_batch'):
                 ds = tf.data.Dataset.from_generator(
-                        gen_wrap,
+                        lambda: self._gen_slice_batch(itr, sess),
                         (tf.float32, tf.int32, tf.int32),
                         (two_d, two_d, two_d))
                 itr = ds.make_one_shot_iterator()
+            #with tf.name_scope('prefetch'):
+            #    ds = ds.prefetch(buffer_size=self.prefetch_sz)
 
-            with tf.name_scope('prefetch'):
-                ds = ds.prefetch(buffer_size=self.prefetch_sz)
-                ops = itr.get_next()
-
-        return ops 
+            wav, ids, idmap = itr.get_next()
+        return wav, ids, idmap
             
 

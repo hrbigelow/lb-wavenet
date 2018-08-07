@@ -180,7 +180,7 @@ class WaveNetGen(ar.WaveNetArch):
         hot = tf.one_hot(samp, self.n_quant)
         wav_val = ops.mu_decode(samp, self.n_quant)
         aop = tf.assign(wav_buf[:,wpos], wav_val)
-        aop = tf.Print(aop, [wpos, samp, wav_val], 'wpos, samp, wav_val', summarize=20)
+        # aop = tf.Print(aop, [wpos, samp], 'wpos, samp', summarize=20)
         self.single_assign.append(aop)
         # aop = tf.Print(aop, [tf.argmax(logits, 1)], 'max_logits_index')
 
