@@ -108,13 +108,13 @@ def main():
         sess = tf.Session()
         # sess = tf.Session(config=tf.ConfigProto(log_device_placement=True))
 
-        wav_input, mel_input, id_masks, id_maps = dset.wav_dataset(sess)
+        wav_input, mel_input, id_masks = dset.wav_dataset(sess)
         print('Created dataset.', file=stderr)
 
         # Note that tfdbg can't run if this is before dset.wav_dataset call
         # sess = tf_debug.LocalCLIDebugWrapperSession(sess)
 
-        loss = net.build_graph(wav_input, mel_input, id_masks, id_maps)
+        loss = net.build_graph(wav_input, mel_input, id_masks)
         print('Built graph.', file=stderr)
 
         if args.resume_step: 

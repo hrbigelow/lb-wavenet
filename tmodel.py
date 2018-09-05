@@ -60,15 +60,21 @@ class WaveNetTrain(ar.WaveNetArch):
         '''lc_input: batch x time x channel
         filt: stride '''
         lc_cur = lc_input 
+        batch_ten = tf.constant(self.batch_sz)
+        lc_out_ten = tf.constant(self.n_lc_out)
+
         for i, s in enumerate(self.lc_upsample):
-            filt = self.get_variable(ar.ArchCat.LC_UPSAMPLE, i)
-            #out_shape = tf.constant([self.batch_sz, tf.shape(lc_cur)[1] * s, self.n_lc_out])
-            out_shape = tf.constant([self.batch_sz, s, self.n_lc_out])
-            lc_cur = tf.contrib.nn.conv1d_transpose(lc_cur, filt, out_shape, s)
+            with tf.variable_scope('tconv{}'.format(i)):
+                filt = self.get_variable(ar.ArchCat.LC_UPSAMPLE, i)
+                slice_ten = tf.shape(lc_cur)[1] * s
+
+                out_shape = tf.stack([batch_ten, slice_ten, lc_out_ten], axis=0)
+                #out_shape = tf.constant([self.batch_sz, s, self.n_lc_out])
+                lc_cur = tf.contrib.nn.conv1d_transpose(lc_cur, filt, out_shape, s)
         return lc_cur
 
 
-    def _preprocess(self, wav_input, lc_input, id_maps):
+    def _preprocess(self, wav_input, lc_input):
         '''entry point of data coming from data.Dataset.
         wav_input: B x T x Q
         '''  
@@ -76,16 +82,13 @@ class WaveNetTrain(ar.WaveNetArch):
 
         if self.has_global_cond():
             # gc_embeds[batch][t] = embedding vector
-            gc_tab = self.get_variable(ar.ArchCat.GC_EMBED)
-            #self.gc_embeds = [tf.nn.embedding_lookup(gc_tab, m) for m in id_maps]
-            self.gc_embeds = tf.nn.embedding_lookup(gc_tab, id_maps)
+            self.gc_embeds = self.get_variable(ar.ArchCat.GC_EMBED)
 
         # upsample lc_input
         lc_upsampled = self._upsample_lc(lc_input)
 
         filt = self.get_variable(ar.ArchCat.PRE)
         trans = ops.conv1x1(wav_input, filt, self.batch_sz, 'conv')
-        # trans = tf.nn.convolution(wav_input, filt, 'VALID', [1], [1], 'conv')
         if self.use_bias:
             bias = self.get_variable(ar.ArchCat.PRE, get_bias=True)
             trans = tf.add(trans, bias)
@@ -95,20 +98,13 @@ class WaveNetTrain(ar.WaveNetArch):
     def _map_embeds(self, id_masks, proj_filt, conv_name):
         '''create the batched, mapped, projected embedding.
         id_masks: B x T = gc_id
-        proj_filt: 1 x n_gc_embed x n_dil
-        self.gc_embeds: 
-        returns shape [batch_sz, t, n_chan]'''
-        #proj_embeds = [
-        #        tf.nn.convolution(tf.expand_dims(emb, 0),
-        #            proj_filt, 'VALID', [1], [1], conv_name)
-        #        for emb in self.gc_embeds]
-        proj_embeds = [
-                ops.conv1x1(emb, proj_filt, self.batch_sz, conv_name)
-                for emb in self.gc_embeds]
-        gathered = [
-                tf.gather(proj_emb[0], mask)
-                for proj_emb, mask in zip(proj_embeds, id_masks)]
-        return tf.stack(gathered)
+        gc_tab: batch x index x n_gc_embed 
+        proj_embeds: batch x index x n_dil
+        proj_filt: n_gc_embed x n_dil
+        returns [batch, index, n_dil]'''
+        gathered = tf.gather(self.gc_embeds, id_masks)
+        proj_gathered = ops.conv1x1(gathered, proj_filt, self.batch_sz, conv_name)
+        return proj_gathered
 
     
     def _dilated_conv(self, prev_z, lc_input, dilation, id_masks, *var_indices): 
@@ -248,7 +244,7 @@ class WaveNetTrain(ar.WaveNetArch):
         return total_loss
 
 
-    def build_graph(self, wav_input, lc_input, id_masks, id_maps):
+    def build_graph(self, wav_input, lc_input, id_masks):
         '''creates the training graph and returns the loss node for the graph.
         the inputs to this function are data.Dataset.iterator.get_next() operations.
         This graph performs the forward calculation in parallel across
@@ -256,14 +252,13 @@ class WaveNetTrain(ar.WaveNetArch):
         the next input value.
         wav_input: list of batch_sz wav_slices
         id_masks: list of batch_sz id_masks
-        id_maps: list of batch_sz id_maps '''
+        '''
 
         encoded_input = self.encode_input_onehot(wav_input)
         encoded_input = tf.stop_gradient(encoded_input)
-        print(encoded_input.shape)
 
         with tf.variable_scope('preprocess'):
-            cur, lc_upsampled = self._preprocess(encoded_input, lc_input, id_maps)
+            cur, lc_upsampled = self._preprocess(encoded_input, lc_input)
         #skps = []
 
         for b in range(self.n_blocks):

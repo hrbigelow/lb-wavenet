@@ -53,7 +53,7 @@ class MaskedSliceWav(object):
         generate tuples (voice_id, wav_path, mel_path)
         '''
         for s in self.sample_catalog:
-            vid, wav_path = s[0], s[1], s[2]
+            vid, wav_path, mel_path = s[0], s[1], s[2]
             yield vid, wav_path, mel_path
         return
 
@@ -152,7 +152,7 @@ class MaskedSliceWav(object):
                             mel[mel_cur_item_pos:mel_cur_item_pos + mel_need_sz])
                     spliced_ids = np.append(spliced_ids, ids[cur_item_pos:cur_item_pos + need_sz])
                     cur_item_pos += need_sz 
-                    yield spliced_wav, spliced_mel, spliced_ids, idmap 
+                    yield spliced_wav, spliced_mel, spliced_ids #, idmap 
                     spliced_wav = np.empty(0, np.float) 
                     spliced_mel = np.empty([0, self.mel_spectrum_sz], np.float)
                     spliced_ids = np.empty(0, np.int32)
@@ -190,15 +190,15 @@ class MaskedSliceWav(object):
                 wav = np.stack([b[0] for b in batch])
                 mel = np.stack([b[1] for b in batch])
                 ids = np.stack([b[2] for b in batch])
-                idmaps = [b[3] for b in batch]
-                idmaps_len = [m.shape[0] for m in idmaps]
-                ml = max(idmaps_len)
+                #idmaps = [b[3] for b in batch]
+                #idmaps_len = [m.shape[0] for m in idmaps]
+                #ml = max(idmaps_len)
 
                 # pad each with zeros at the end so we can stack
-                pairs = zip(idmaps, idmaps_len)
-                idmaps_pad = [np.pad(m, ((0, ml - l),), mode='constant') for m,l in pairs]
-                idmap = np.stack(idmaps_pad)
-                yield wav, mel, ids, idmap 
+                #pairs = zip(idmaps, idmaps_len)
+                #idmaps_pad = [np.pad(m, ((0, ml - l),), mode='constant') for m,l in pairs]
+                #idmap = np.stack(idmaps_pad)
+                yield wav, mel, ids #, idmap 
             except StopIteration:
                 # this will be raised if wav_itr runs out
                 break
@@ -217,8 +217,8 @@ class MaskedSliceWav(object):
             with tf.name_scope('sample_map'):
                 ds = tf.data.Dataset.from_generator(
                         self._gen_path,
-                        (tf.int32, tf.string),
-                        (zero_d, zero_d))
+                        (tf.int32, tf.string, tf.string),
+                        (zero_d, zero_d, zero_d))
 
             with tf.name_scope('shuffle_repeat'):
                 ds = ds.shuffle(buffer_size=len(self.sample_catalog))
@@ -231,8 +231,8 @@ class MaskedSliceWav(object):
             with tf.name_scope('slice_batch'):
                 ds = tf.data.Dataset.from_generator(
                         gen_wrap,
-                        (tf.float32, tf.float32, tf.int32, tf.int32),
-                        (two_d, three_d, two_d, two_d))
+                        (tf.float32, tf.float32, tf.int32),
+                        (two_d, three_d, two_d))
                 itr = ds.make_one_shot_iterator()
 
             with tf.name_scope('prefetch'):

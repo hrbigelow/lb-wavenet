@@ -67,7 +67,7 @@ class WaveNetArch(object):
                 dim2 = self.n_lc_in
             else:
                 dim2 = self.n_lc_out 
-            return [self.lc_upsample[i], dim2, self.n_lc_out]
+            return [self.lc_upsample[i], self.n_lc_out, dim2]
 
         self.shape = {
                 # shape, or function accepting var_indices and returning shape
