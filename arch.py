@@ -4,15 +4,18 @@ from enum import IntEnum
 
 class ArchCat(IntEnum):
     PRE = 1 
-    RESIDUAL = 2 
-    SKIP = 3
-    SIGNAL = 4 
-    GATE = 5 
-    GC_SIGNAL = 6
-    GC_GATE = 7 
-    GC_EMBED = 8
-    POST1 = 9
-    POST2 = 10
+    LC_UPSAMPLE = 2
+    RESIDUAL = 3 
+    SKIP = 4
+    SIGNAL = 5 
+    GATE = 6 
+    GC_SIGNAL = 7
+    GC_GATE = 8 
+    GC_EMBED = 9
+    LC_SIGNAL = 10 
+    LC_GATE = 11
+    POST1 = 12 
+    POST2 = 13
 
 
 class WaveNetArch(object):
@@ -31,6 +34,9 @@ class WaveNetArch(object):
             n_post,
             n_gc_embed,
             n_gc_category,
+            n_lc_in,
+            n_lc_out,
+            lc_upsample,
             use_bias,
             add_summary):
 
@@ -43,7 +49,9 @@ class WaveNetArch(object):
         self.n_post = n_post
         self.n_gc_embed = n_gc_embed
         self.n_gc_category = n_gc_category
-        self.use_gc = n_gc_embed > 0
+        self.n_lc_in = n_lc_in
+        self.n_lc_out = n_lc_out
+        self.lc_upsample = lc_upsample
         self.graph_built = False
         self.saver = None
         self.add_summary = add_summary
@@ -54,8 +62,17 @@ class WaveNetArch(object):
         # dict for use with save/restore 
         self.vars = {}
 
+        def _upsample_shape(i):
+            if i == 0:
+                dim2 = self.n_lc_in
+            else:
+                dim2 = self.n_lc_out 
+            return [self.lc_upsample[i], dim2, self.n_lc_out]
+
         self.shape = {
+                # shape, or function accepting var_indices and returning shape
                 ArchCat.PRE: [self.n_quant, self.n_res],
+                ArchCat.LC_UPSAMPLE: _upsample_shape, 
                 ArchCat.RESIDUAL: [self.n_dil, self.n_res],
                 ArchCat.SKIP: [self.n_dil, self.n_skip],
                 ArchCat.SIGNAL: [2, self.n_res, self.n_dil],
@@ -63,9 +80,15 @@ class WaveNetArch(object):
                 ArchCat.GC_SIGNAL: [self.n_gc_embed, self.n_dil],
                 ArchCat.GC_GATE: [self.n_gc_embed, self.n_dil],
                 ArchCat.GC_EMBED: [self.n_gc_category, self.n_gc_embed],
+                ArchCat.LC_SIGNAL: [self.n_lc_out, self.n_dil],
+                ArchCat.LC_GATE: [self.n_lc_out, self.n_dil],
                 ArchCat.POST1: [self.n_skip, self.n_post],
                 ArchCat.POST2: [self.n_post, self.n_quant]
                 }
+
+    def has_global_cond(self):
+        return self.n_gc_embed > 0
+
 
     def get_variable(self, arch, *var_indices, get_bias=False):
         '''wrapper for tf.get_variable that associates arch name with a shape
@@ -75,13 +98,17 @@ class WaveNetArch(object):
         *args:    zero or more integers that denote distinct instances of the variable,
                   used for architectures with repetitive structure
         '''
+        if isinstance(self.shape[arch], list):
+            shape = self.shape[arch]
+        else:
+            shape = self.shape[arch](*var_indices)
+
         if get_bias:
             name = arch.name + '_BIAS'
-            shape = self.shape[arch][-1]
+            shape = shape[-1] 
             init = self.bias_init
         else:
             name = arch.name
-            shape = self.shape[arch]
             init = self.filter_init
 
         var = tf.get_variable(name, shape, initializer=init)

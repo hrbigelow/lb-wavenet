@@ -15,6 +15,9 @@ class WaveNetTrain(ar.WaveNetArch):
             n_post1,
             n_gc_embed,
             n_gc_category,
+            n_lc_in,
+            n_lc_out,
+            lc_upsample,
             use_bias,
             l2_factor,
             batch_sz,
@@ -30,6 +33,9 @@ class WaveNetTrain(ar.WaveNetArch):
                 n_post1,
                 n_gc_embed,
                 n_gc_category,
+                n_lc_in,
+                n_lc_out,
+                lc_upsample,
                 use_bias,
                 add_summary)
 
@@ -50,29 +56,46 @@ class WaveNetTrain(ar.WaveNetArch):
                     name = 'one_hot_input')
         return wav_input_onehot
 
-    def _preprocess(self, input, id_maps):
-        '''entry point of data coming from data.Dataset.
-        input[b][t][q] for batch b, time t, quant channel q'''  
-        # self.batch_sz = tf.shape(input)[0]
+    def _upsample_lc(self, lc_input):
+        '''lc_input: batch x time x channel
+        filt: stride '''
+        lc_cur = lc_input 
+        for i, s in enumerate(self.lc_upsample):
+            filt = self.get_variable(ar.ArchCat.LC_UPSAMPLE, i)
+            #out_shape = tf.constant([self.batch_sz, tf.shape(lc_cur)[1] * s, self.n_lc_out])
+            out_shape = tf.constant([self.batch_sz, s, self.n_lc_out])
+            lc_cur = tf.contrib.nn.conv1d_transpose(lc_cur, filt, out_shape, s)
+        return lc_cur
 
-        if self.use_gc:
-            # gc_embeds[batch][i] = embedding vector
+
+    def _preprocess(self, wav_input, lc_input, id_maps):
+        '''entry point of data coming from data.Dataset.
+        wav_input: B x T x Q
+        '''  
+        # self.batch_sz = tf.shape(wav_input)[0]
+
+        if self.has_global_cond():
+            # gc_embeds[batch][t] = embedding vector
             gc_tab = self.get_variable(ar.ArchCat.GC_EMBED)
-            self.gc_embeds = [tf.nn.embedding_lookup(gc_tab, m) for m in id_maps]
+            #self.gc_embeds = [tf.nn.embedding_lookup(gc_tab, m) for m in id_maps]
+            self.gc_embeds = tf.nn.embedding_lookup(gc_tab, id_maps)
+
+        # upsample lc_input
+        lc_upsampled = self._upsample_lc(lc_input)
 
         filt = self.get_variable(ar.ArchCat.PRE)
-        trans = ops.conv1x1(input, filt, self.batch_sz, 'conv')
-        # trans = tf.nn.convolution(input, filt, 'VALID', [1], [1], 'conv')
+        trans = ops.conv1x1(wav_input, filt, self.batch_sz, 'conv')
+        # trans = tf.nn.convolution(wav_input, filt, 'VALID', [1], [1], 'conv')
         if self.use_bias:
             bias = self.get_variable(ar.ArchCat.PRE, get_bias=True)
             trans = tf.add(trans, bias)
 
-        return trans 
+        return trans, lc_upsampled 
 
     def _map_embeds(self, id_masks, proj_filt, conv_name):
         '''create the batched, mapped, projected embedding.
-        id_masks: [batch_sz, t] = gc_id
-        proj_filt: [1, n_gc_embed, n_dil]
+        id_masks: B x T = gc_id
+        proj_filt: 1 x n_gc_embed x n_dil
         self.gc_embeds: 
         returns shape [batch_sz, t, n_chan]'''
         #proj_embeds = [
@@ -88,7 +111,7 @@ class WaveNetTrain(ar.WaveNetArch):
         return tf.stack(gathered)
 
     
-    def _dilated_conv(self, prev_z, dilation, id_masks, *var_indices): 
+    def _dilated_conv(self, prev_z, lc_input, dilation, id_masks, *var_indices): 
         '''construct one dilated, gated convolution as in equation 2 of WaveNet
         Sept 2016
         prev_z[b][t][r], for batch b, time t, res channel r
@@ -110,6 +133,7 @@ class WaveNetTrain(ar.WaveNetArch):
         v = {}
         sig_gate = [ar.ArchCat.SIGNAL, ar.ArchCat.GATE]
         sig_gate_gc = [ar.ArchCat.GC_SIGNAL, ar.ArchCat.GC_GATE]
+        sig_gate_lc = [ar.ArchCat.LC_SIGNAL, ar.ArchCat.LC_GATE]
 
         for arch in sig_gate:
             filt = self.get_variable(arch, *var_indices)
@@ -125,11 +149,17 @@ class WaveNetTrain(ar.WaveNetArch):
                 # bias = tf.Print(bias, [bias])
                 v[arch] = tf.add(v[arch], bias, 'add_bias')
 
-        if self.use_gc:
+        if self.has_global_cond():
             for a, g in zip(sig_gate, sig_gate_gc): 
                 gc_filt = self.get_variable(g, *var_indices)
                 gc_proj = self._map_embeds(id_masks, gc_filt, 'gc_proj_embed')
                 v[a] = tf.add(v[a], gc_proj, 'add')
+
+        for a, l in zip(sig_gate, sig_gate_lc): 
+            lc_filt = self.get_variable(l, *var_indices)
+            lc_proj = ops.conv1x1(lc_input, lc_filt, self.batch_sz, 'lc')
+            v[a] = tf.add(v[a], lc_proj, 'add')
+
         
         # ensure we update prev_z_save before movign on
         # should this have a tf.stop_gradient?  what would that mean?
@@ -218,7 +248,7 @@ class WaveNetTrain(ar.WaveNetArch):
         return total_loss
 
 
-    def build_graph(self, wav_input, id_masks, id_maps):
+    def build_graph(self, wav_input, lc_input, id_masks, id_maps):
         '''creates the training graph and returns the loss node for the graph.
         the inputs to this function are data.Dataset.iterator.get_next() operations.
         This graph performs the forward calculation in parallel across
@@ -230,9 +260,10 @@ class WaveNetTrain(ar.WaveNetArch):
 
         encoded_input = self.encode_input_onehot(wav_input)
         encoded_input = tf.stop_gradient(encoded_input)
+        print(encoded_input.shape)
 
         with tf.variable_scope('preprocess'):
-            cur = self._preprocess(encoded_input, id_maps)
+            cur, lc_upsampled = self._preprocess(encoded_input, lc_input, id_maps)
         #skps = []
 
         for b in range(self.n_blocks):
@@ -241,7 +272,7 @@ class WaveNetTrain(ar.WaveNetArch):
                     with tf.variable_scope('layer{}'.format(bl)):
                         l = b * self.n_block_layers + bl
                         dil = 2**bl
-                        dconv = self._dilated_conv(cur, dil, id_masks, b, bl)
+                        dconv = self._dilated_conv(cur, lc_upsampled, dil, id_masks, b, bl)
                         sig, skp = self._chan_reduce(dconv, b, bl)
                         if b == 0 and bl == 0:
                             skp_sum = skp

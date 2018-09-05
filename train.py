@@ -16,22 +16,20 @@ def make_flusher(file_writer):
 def get_args():
     import argparse
     parser = argparse.ArgumentParser(description='WaveNet')
-    parser.add_argument('--timeline-file', type=str,
+    parser.add_argument('--timeline-file', '-tf', type=str,
             help='Enable profiling and write info to <timeline_file>')
-    parser.add_argument('--prof-dir', type=str, metavar='DIR',
+    parser.add_argument('--prof-dir', '-pd', type=str, metavar='DIR',
             help='Output profiling events to <prof_dir> for use with ' +
             'TensorFlow Profiler')
-    parser.add_argument('--ckpt-pfx', type=str, metavar='STR',
-            help='Prefix for loading or storing checkpoint files')
     parser.add_argument('--resume-step', '-r', type=int, metavar='INT',
             help='Resume training from '
             + 'CKPT_DIR/<ckpt_pfx>-<resume_step>.{meta,index,data-..}')
-    parser.add_argument('--add-summary', action='store_true',
+    parser.add_argument('--add-summary', '-s', action='store_true', default=False,
             help='If present, add summary histogram nodes to graph for TensorBoard')
 
     # positional arguments
-    parser.add_argument('ckpt_dir', type=str, metavar='CKPT_DIR',
-            help='Directory for all checkpoints')
+    parser.add_argument('ckpt_path', type=str, metavar='CKPT_PATH_PFX',
+            help='E.g. /path/to/ckpt/pfx, a path and prefix combination for writing checkpoint files')
     parser.add_argument('arch_file', type=str, metavar='ARCH_FILE',
             help='JSON file specifying architectural parameters')
     parser.add_argument('par_file', type=str, metavar='PAR_FILE',
@@ -64,7 +62,6 @@ def main():
     with open(args.par_file, 'r') as fp:
         par = json.load(fp)
 
-    ckpt_path = path_join(args.ckpt_dir, args.ckpt_pfx) 
 
     net = tmodel.WaveNetTrain(
             arch['n_blocks'],
@@ -76,6 +73,9 @@ def main():
             arch['n_post1'],
             arch['n_gc_embed'],
             arch['n_gc_category'],
+            arch['n_lc_in'],
+            arch['n_lc_out'],
+            arch['lc_upsample'],
             arch['use_bias'],
             par['l2_factor'],
             par['batch_sz'],
@@ -90,7 +90,9 @@ def main():
             par['sample_rate'],
             par['slice_sz'],
             par['prefetch_sz'],
-            recep_field_sz
+            recep_field_sz,
+            arch['n_lc_in'],
+            arch['lc_hop_sz']
             )
 
     dset.init_sample_catalog()
@@ -100,19 +102,23 @@ def main():
             ctx = tf.contrib.tfprof.ProfileContext(args.prof_dir)
             ctx_obj = stack.enter_context(ctx)
 
+        run_meta = tf.RunMetadata()
+        run_opts = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE,
+                output_partition_graphs=True)
         sess = tf.Session()
         # sess = tf.Session(config=tf.ConfigProto(log_device_placement=True))
 
-        wav_input, id_masks, id_maps = dset.wav_dataset(sess)
+        wav_input, mel_input, id_masks, id_maps = dset.wav_dataset(sess)
         print('Created dataset.', file=stderr)
 
         # Note that tfdbg can't run if this is before dset.wav_dataset call
         # sess = tf_debug.LocalCLIDebugWrapperSession(sess)
 
-        loss = net.build_graph(wav_input, id_masks, id_maps)
+        loss = net.build_graph(wav_input, mel_input, id_masks, id_maps)
+        print('Built graph.', file=stderr)
 
         if args.resume_step: 
-            ckpt = '{}-{}'.format(ckpt_path, args.resume_step)
+            ckpt = '{}-{}'.format(args.ckpt_path, args.resume_step)
             print('Restoring from {}'.format(ckpt))
             net.restore(sess, ckpt) 
         # print(sess.run(wav_input))
@@ -125,13 +131,14 @@ def main():
 
         optimizer = tf.train.AdamOptimizer(learning_rate=par['learning_rate'])
         train_vars = tf.trainable_variables()
+        print('Created optimizer.', file=stderr)
 
         # writing this out explicitly for educational purposes
         step = args.resume_step or 0
         global_step = tf.Variable(step, trainable=False)
         grads_and_vars = optimizer.compute_gradients(loss, train_vars)
         apply_grads = optimizer.apply_gradients(grads_and_vars, global_step)
-
+        print('Created gradients.', file=stderr)
 
         init = tf.global_variables_initializer()
         sess.run(init)
@@ -160,13 +167,17 @@ def main():
                     f.write(chrome_trace)
 
             else:
-                _, step, loss_val = sess.run([apply_grads, global_step, loss])
+                _, step, loss_val = sess.run([apply_grads, global_step, loss],
+                        options=run_opts, run_metadata=run_meta)
+                if step == 5:
+                    with open('/tmp/run.txt', 'w') as out:
+                        out.write(str(run_meta))
             if step % 10 == 0:
                 print('step, loss: {}\t{}'.format(step, loss_val), file=stderr)
                 if summary_op is not None:
                     fw.add_summary(sess.run(summary_op), step)
             if step % 100 == 0:
-                path = net.save(sess, ckpt_path, step)
+                path = net.save(sess, args.ckpt_path, step)
                 print('Saved checkpoint to %s\n' % path, file=stderr)
 
 

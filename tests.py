@@ -24,7 +24,7 @@ def mu(wav_in, sample_rate, n_quanta, wav_out):
     print('Sum squared error: ' + str(sum(pow(audio - audio_dec, 2))))
 
 
-def get_tensor_sizes(sess, feed_dict):
+def get_tensor_sizes(sess):
     '''compute a summary of (name, num_elems, dtype)
     for all nodes in graph:
     summary[i] = (name, size, shape_string, dtype)'''

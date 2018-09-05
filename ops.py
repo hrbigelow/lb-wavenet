@@ -45,7 +45,7 @@ def conv1x1(input, filt, batch_sz, name='conv1x1'):
     output: B x T x O
     performs output[b][t] = filt * input[b][t] 
     '''
-    # return tf.nn.convolution(input, tf.expand_dims(filt, 0), 'VALID', [1], [1], 'conv')
+    #return tf.nn.convolution(input, tf.expand_dims(filt, 0), 'VALID', [1], [1], 'conv')
 
     with tf.name_scope(name):
         # filt_shape = tf.concat([[batch_sz], tf.shape(filt)], axis=0)
