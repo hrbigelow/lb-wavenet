@@ -24,10 +24,15 @@ class MaskedSliceWav(object):
         self.sam_file = sam_file
         self.recep_field_sz = recep_field_sz
         self.sample_rate = sample_rate
-        self.slice_sz = slice_sz
         self.prefetch_sz = prefetch_sz
         self.mel_spectrum_sz = mel_spectrum_sz
         self.mel_hop_sz = mel_hop_sz
+        if slice_sz % mel_hop_sz != 0:
+            requested_slice_sz = slice_sz
+            slice_sz += mel_hop_sz - (slice_sz % mel_hop_sz)
+            print('Warning: aligning slice size from {} to {} for mel_hop_sz {}'.format(
+                requested_slice_sz, slice_sz, mel_hop_sz), file=stderr) 
+        self.slice_sz = slice_sz
         self.batch_sz = batch_sz
         
     def init_sample_catalog(self):
@@ -69,8 +74,8 @@ class MaskedSliceWav(object):
             try:
                 vid, wav_path, mel_path = sess.run(next_el)
                 print(mel_path)
-                wav = np.load(wav_path)
-                mel = np.load(mel_path)
+                wav = np.load(wav_path.decode())
+                mel = np.load(mel_path.decode())
                 yield int(vid), wav, mel
             except tf.errors.OutOfRangeError:
                 break
@@ -105,46 +110,42 @@ class MaskedSliceWav(object):
 
             while True:
                 try:
+                    # import pdb; pdb.set_trace()
                     vid, wav, mel = next(wav_gen) 
-                    snip = len(wav) % self.mel_hop_size
-                    wav = wav[:-snip]
-                    assert len(wav) == len(mel) * self.mel_hop_size
+                    snip = len(wav) % self.mel_hop_sz
+                    wav = wav[:-snip or None]
+                    if len(wav) != len(mel) * self.mel_hop_sz:
+                        print('Error: len(wav) = {}, len(mel) * mel_hop_sz = {}'.format(
+                            len(wav), len(mel) * self.mel_hop_sz))
 
                 except StopIteration:
                     break
                 wav_sz = wav.shape[0] 
                 if wav_sz < self.recep_field_sz:
-                    printf('Warning: skipping length %i wav file (voice id %i).  '
-                            + 'Shorter than receptive field size of %i\n' 
-                            % (wav_sz, vid, self.recep_field_sz))
+                    print(('Warning: skipping length {} wav file (voice id {}).  '
+                            + 'Shorter than receptive field size of {}').format( 
+                            wav_sz, vid, self.recep_field_sz))
                     continue
-                #try:
-                #    mid = idmap.tolist().index(vid)
-                #except ValueError:
-                #    idmap = np.append(idmap, vid)
-                #    mid = len(idmap) - 1
-
-                #
-                #slice_bound = min(need_sz, wav_sz)
-                #mid_bound = max(recep_bound, slice_bound)
                 
                 ids = np.concatenate([
                     np.full(recep_bound, 0, np.int32),
                     np.full(wav_sz - recep_bound, vid, np.int32) 
                     ])
 
-                cur_item_pos = 0
+                cur_pos = 0
                 
-                while need_sz <= (wav_sz - cur_item_pos):
-                    # print(str(need_sz) + ', ' + str(wav_sz - cur_item_pos))
+                while need_sz <= (wav_sz - cur_pos):
+                    # print(str(need_sz) + ', ' + str(wav_sz - cur_pos))
                     # use up a chunk of the current item and yield the slice
-                    mel_cur_item_pos = cur_item_pos // self.mel_hop_size
-                    mel_need_sz = need_sz // self.mel_hop_size
-                    spliced_wav = np.append(spliced_wav, wav[cur_item_pos:cur_item_pos + need_sz])
+                    mel_cur_pos = cur_pos // self.mel_hop_sz
+                    mel_need_sz = need_sz // self.mel_hop_sz
+                    spliced_wav = np.append(spliced_wav, wav[cur_pos:cur_pos + need_sz],
+                            axis=0)
                     spliced_mel = np.append(spliced_mel,
-                            mel[mel_cur_item_pos:mel_cur_item_pos + mel_need_sz])
-                    spliced_ids = np.append(spliced_ids, ids[cur_item_pos:cur_item_pos + need_sz])
-                    cur_item_pos += need_sz 
+                            mel[mel_cur_pos:mel_cur_pos + mel_need_sz], axis=0)
+                    spliced_ids = np.append(spliced_ids, ids[cur_pos:cur_pos + need_sz],
+                            axis=0)
+                    cur_pos += need_sz 
                     yield spliced_wav, spliced_mel, spliced_ids #, idmap 
                     spliced_wav = np.empty(0, np.float) 
                     spliced_mel = np.empty([0, self.mel_spectrum_sz], np.float)
@@ -152,12 +153,12 @@ class MaskedSliceWav(object):
                     # idmap = np.array([0, vid], np.int32)
                     need_sz = self.slice_sz 
 
-                if cur_item_pos != wav_sz:
+                if cur_pos != wav_sz:
                     # append this piece of wav to the current slice 
-                    spliced_wav = np.append(spliced_wav, wav[cur_item_pos:])
-                    spliced_mel = np.append(spliced_mel, mel[mel_cur_item_pos:])
-                    spliced_ids = np.append(spliced_ids, ids[cur_item_pos:])
-                    need_sz -= (wav_sz - cur_item_pos)
+                    spliced_wav = np.append(spliced_wav, wav[cur_pos:])
+                    spliced_mel = np.append(spliced_mel, mel[mel_cur_pos:])
+                    spliced_ids = np.append(spliced_ids, ids[cur_pos:])
+                    need_sz -= (wav_sz - cur_pos)
             return
         return gen_fcn
 
@@ -166,8 +167,9 @@ class MaskedSliceWav(object):
         '''generates a batch of concatenated slices
         yields:
         wav[b][t] = amplitude
+        mel[b][t][c] = freq
         ids[b][t] = vid or zero (mask)
-        b = batch, t = timestep
+        b = batch, t = timestep, c = channel
         '''
         # construct the single (vid, wav) generator
         wav_gen = self._wav_gen(path_itr, sess)
@@ -178,19 +180,12 @@ class MaskedSliceWav(object):
         while True:
             try:
                 # this is probably expensive
+                # import pdb; pdb.set_trace()
                 batch = [next(g) for g in gens]
                 wav = np.stack([b[0] for b in batch])
                 mel = np.stack([b[1] for b in batch])
                 ids = np.stack([b[2] for b in batch])
-                #idmaps = [b[3] for b in batch]
-                #idmaps_len = [m.shape[0] for m in idmaps]
-                #ml = max(idmaps_len)
-
-                # pad each with zeros at the end so we can stack
-                #pairs = zip(idmaps, idmaps_len)
-                #idmaps_pad = [np.pad(m, ((0, ml - l),), mode='constant') for m,l in pairs]
-                #idmap = np.stack(idmaps_pad)
-                yield wav, mel, ids #, idmap 
+                yield wav, mel, ids
             except StopIteration:
                 # this will be raised if wav_itr runs out
                 break
