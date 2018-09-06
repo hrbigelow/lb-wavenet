@@ -5,42 +5,11 @@ import ops
 
 class WaveNetTrain(ar.WaveNetArch):
 
-    def __init__(self,
-            n_blocks,
-            n_block_layers,
-            n_quant,
-            n_res,
-            n_dil,
-            n_skip,
-            n_post1,
-            n_gc_embed,
-            n_gc_category,
-            n_lc_in,
-            n_lc_out,
-            lc_upsample,
-            use_bias,
-            l2_factor,
-            batch_sz,
-            add_summary):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
 
-        super().__init__(
-                n_blocks,
-                n_block_layers,
-                n_quant,
-                n_res,
-                n_dil,
-                n_skip,
-                n_post1,
-                n_gc_embed,
-                n_gc_category,
-                n_lc_in,
-                n_lc_out,
-                lc_upsample,
-                use_bias,
-                add_summary)
-
-        self.l2_factor = l2_factor
-        self.batch_sz = batch_sz
+        self.l2_factor = kwargs['l2_factor']
+        self.batch_sz = kwargs['batch_sz']
         
     def get_recep_field_sz(self):
         return self.n_blocks * sum([2**l for l in range(self.n_block_layers)])

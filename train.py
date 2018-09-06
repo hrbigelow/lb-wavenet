@@ -63,37 +63,19 @@ def main():
         par = json.load(fp)
 
 
-    net = tmodel.WaveNetTrain(
-            arch['n_blocks'],
-            arch['n_block_layers'],
-            arch['n_quant'],
-            arch['n_res'],
-            arch['n_dil'],
-            arch['n_skip'],
-            arch['n_post1'],
-            arch['n_gc_embed'],
-            arch['n_gc_category'],
-            arch['n_lc_in'],
-            arch['n_lc_out'],
-            arch['lc_upsample'],
-            arch['use_bias'],
-            par['l2_factor'],
-            par['batch_sz'],
-            args.add_summary
-            )
-    recep_field_sz = net.get_recep_field_sz()
-
-
-    dset = data.MaskedSliceWav(
-            args.sam_file,
-            par['batch_sz'],
-            par['sample_rate'],
-            par['slice_sz'],
-            par['prefetch_sz'],
-            recep_field_sz,
-            arch['n_lc_in'],
-            arch['lc_hop_sz']
-            )
+    net_args = { 'add_summary': args.add_summary, **arch, **par }
+    net = tmodel.WaveNetTrain(**net_args)
+    data_args = {
+            'sam_file': args.sam_file,
+            'recep_field_sz': net.get_recep_field_sz(),
+            'sample_rate': par['sample_rate'],
+            'slice_sz': par['slice_sz'],
+            'prefetch_sz': par['prefetch_sz'],
+            'mel_spectrum_sz': arch['n_lc_in'],
+            'mel_hop_sz': arch['lc_hop_sz'],
+            'batch_sz': par['batch_sz']
+            }
+    dset = data.MaskedSliceWav(**data_args)
 
     dset.init_sample_catalog()
 

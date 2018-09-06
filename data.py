@@ -19,23 +19,16 @@ from sys import stderr
 
 class MaskedSliceWav(object):
 
-    def __init__(self,
-            sam_file,
-            batch_sz,
-            sample_rate, 
-            slice_sz,
-            prefetch_sz,
-            recep_field_sz,
-            mel_spectrum_sz,
-            mel_hop_sz
-            ):
+    def __init__(self, sam_file, recep_field_sz, sample_rate, slice_sz, prefetch_sz,
+            mel_spectrum_sz, mel_hop_sz, batch_sz):
         self.sam_file = sam_file
-        self.batch_sz = batch_sz
+        self.recep_field_sz = recep_field_sz
         self.sample_rate = sample_rate
         self.slice_sz = slice_sz
         self.prefetch_sz = prefetch_sz
-        self.recep_field_sz = recep_field_sz
         self.mel_spectrum_sz = mel_spectrum_sz
+        self.mel_hop_sz = mel_hop_sz
+        self.batch_sz = batch_sz
         
     def init_sample_catalog(self):
         self.sample_catalog = []
@@ -75,6 +68,7 @@ class MaskedSliceWav(object):
         while True:
             try:
                 vid, wav_path, mel_path = sess.run(next_el)
+                print(mel_path)
                 wav = np.load(wav_path)
                 mel = np.load(mel_path)
                 yield int(vid), wav, mel
@@ -96,7 +90,6 @@ class MaskedSliceWav(object):
             spliced_wav[t] = wav_val
             spliced_mel[t] = mel_spectrum_array
             spliced_ids[t] = mapping_id 
-            idmap[mapping_id] = voice_id
 
             mapping_id corresponds to voice_id for valid positions, or zero for invalid
             (positions corresponding to junction-spanning receptive field windows)
@@ -108,7 +101,7 @@ class MaskedSliceWav(object):
             spliced_mel = np.empty([0, self.mel_spectrum_sz], np.float)
             spliced_ids = np.empty(0, np.int32)
             recep_bound = self.recep_field_sz - 1
-            idmap = np.array([0], np.int32)
+            # idmap = np.array([0], np.int32)
 
             while True:
                 try:
@@ -125,19 +118,19 @@ class MaskedSliceWav(object):
                             + 'Shorter than receptive field size of %i\n' 
                             % (wav_sz, vid, self.recep_field_sz))
                     continue
-                try:
-                    mid = idmap.tolist().index(vid)
-                except ValueError:
-                    idmap = np.append(idmap, vid)
-                    mid = len(idmap) - 1
+                #try:
+                #    mid = idmap.tolist().index(vid)
+                #except ValueError:
+                #    idmap = np.append(idmap, vid)
+                #    mid = len(idmap) - 1
 
-                slice_bound = min(need_sz, wav_sz)
-                mid_bound = max(recep_bound, slice_bound)
+                #
+                #slice_bound = min(need_sz, wav_sz)
+                #mid_bound = max(recep_bound, slice_bound)
                 
                 ids = np.concatenate([
                     np.full(recep_bound, 0, np.int32),
-                    np.full(mid_bound - recep_bound, mid, np.int32), 
-                    np.full(wav_sz - mid_bound, 1, np.int32)
+                    np.full(wav_sz - recep_bound, vid, np.int32) 
                     ])
 
                 cur_item_pos = 0
@@ -156,7 +149,7 @@ class MaskedSliceWav(object):
                     spliced_wav = np.empty(0, np.float) 
                     spliced_mel = np.empty([0, self.mel_spectrum_sz], np.float)
                     spliced_ids = np.empty(0, np.int32)
-                    idmap = np.array([0, vid], np.int32)
+                    # idmap = np.array([0, vid], np.int32)
                     need_sz = self.slice_sz 
 
                 if cur_item_pos != wav_sz:
@@ -173,8 +166,7 @@ class MaskedSliceWav(object):
         '''generates a batch of concatenated slices
         yields:
         wav[b][t] = amplitude
-        ids[b][t] = mid or zero (mask)
-        idmap[b][mid] = vid
+        ids[b][t] = vid or zero (mask)
         b = batch, t = timestep
         '''
         # construct the single (vid, wav) generator

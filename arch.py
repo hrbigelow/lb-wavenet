@@ -24,38 +24,11 @@ class WaveNetArch(object):
     training or inference.  Manages all trainable variables and their saving
     and restoring'''
 
-    def __init__(self,
-            n_blocks,
-            n_block_layers,
-            n_quant,
-            n_res,
-            n_dil,
-            n_skip,
-            n_post,
-            n_gc_embed,
-            n_gc_category,
-            n_lc_in,
-            n_lc_out,
-            lc_upsample,
-            use_bias,
-            add_summary):
+    def __init__(self, **kwargs):
+        self.__dict__.update(**kwargs)
 
-        self.n_blocks = n_blocks
-        self.n_block_layers = n_block_layers
-        self.n_quant = n_quant
-        self.n_res = n_res
-        self.n_dil = n_dil
-        self.n_skip = n_skip
-        self.n_post = n_post
-        self.n_gc_embed = n_gc_embed
-        self.n_gc_category = n_gc_category
-        self.n_lc_in = n_lc_in
-        self.n_lc_out = n_lc_out
-        self.lc_upsample = lc_upsample
         self.graph_built = False
         self.saver = None
-        self.add_summary = add_summary
-        self.use_bias = use_bias
         self.filter_init = tf.contrib.layers.xavier_initializer_conv2d()
         self.bias_init = tf.constant_initializer(value=0.0, dtype=tf.float32)
 
