@@ -1,7 +1,5 @@
 # training functions
 
-base = '/home/hrbigelow/ai/'
-tb_dir = base + 'tb/lb-wavenet'
 max_steps = 300000 
 
 def make_flusher(file_writer):
@@ -28,6 +26,8 @@ def get_args():
             help='If present, add summary histogram nodes to graph for TensorBoard')
     parser.add_argument('--cpu-only', '-cpu', action='store_true', default=False,
             help='If present, do all computation on CPU')
+    parser.add_argument('--tb-dir', '-tb', type=str, metavar='DIR',
+            help='TensorBoard directory for writing summary events')
 
     # positional arguments
     parser.add_argument('ckpt_path', type=str, metavar='CKPT_PATH_PFX',
@@ -116,8 +116,14 @@ def main():
 
         summary_op = tf.summary.merge_all()
 
-        fw = tf.summary.FileWriter(tb_dir, graph=sess.graph)
-        make_flusher(fw)
+        if summary_op is not None and args.tb_dir is None:
+            print('Error: must provide --tb-dir argument if '
+            + 'there are summaries in the graph', file=stderr)
+            exit(1)
+
+        if args.tb_dir:
+            fw = tf.summary.FileWriter(tb_dir, graph=sess.graph)
+            make_flusher(fw)
         print('Created training graph.', file=stderr)
 
         with tf.device(dev_string):

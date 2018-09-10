@@ -1,10 +1,6 @@
 # generate audio
 import argparse
 
-base = '/home/hrbigelow/ai/'
-tb_dir = base + 'tb/lb-wavenet'
-wav_dir = base + 'wav'
-
 
 def get_args():
     parser = argparse.ArgumentParser(description='WaveNet')
@@ -28,6 +24,8 @@ def get_args():
             help='JSON file specifying architectural parameters')
     parser.add_argument('ckpt', metavar='CHECKPOINT_PREFIX', type=str,
             help='Provide <ckpt> for <ckpt>.{meta,index,data-..} files')
+    parser.add_argument('wav_dir', metavar='OUTPUT_WAV_DIR', type=str,
+            help='Output directory for generated .wav files')
     return parser.parse_args()
 
 
