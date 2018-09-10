@@ -1,0 +1,16 @@
+{
+    "n_blocks": 1,
+    "n_block_layers": 3,
+    "n_quant": 256,
+    "n_res": 3,
+    "n_dil": 4,
+    "n_skip": 8,
+    "n_post": 6,
+    "n_gc_embed": 16,
+    "n_lc_in": 80,
+    "n_lc_out": 160,
+    "lc_hop_sz": 256,
+    "lc_upsample": [4, 4, 4, 4],
+    "use_bias": true
+}
+ 

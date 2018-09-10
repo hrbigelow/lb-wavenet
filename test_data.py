@@ -40,10 +40,12 @@ def main():
     sess = tf.Session()
     ops = dset.wav_dataset(sess)
 
+    l = 0
     while True:
         try:
             wav, mel, mask = sess.run(ops)
-            print(len(wav[0]), len(mel[0]), len(mask[0]))
+            print(l, len(wav[0]), len(mel[0]), len(mask[0]))
+            l += 1
         except tf.errors.OutOfRangeError:
             print('Reached end of data set')
             break

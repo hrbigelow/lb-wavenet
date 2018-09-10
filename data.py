@@ -19,10 +19,9 @@ from sys import stderr
 
 class MaskedSliceWav(object):
 
-    def __init__(self, sam_file, recep_field_sz, sample_rate, slice_sz, prefetch_sz,
+    def __init__(self, sam_file, sample_rate, slice_sz, prefetch_sz,
             mel_spectrum_sz, mel_hop_sz, batch_sz):
         self.sam_file = sam_file
-        self.recep_field_sz = recep_field_sz
         self.sample_rate = sample_rate
         self.prefetch_sz = prefetch_sz
         self.mel_spectrum_sz = mel_spectrum_sz
@@ -42,6 +41,12 @@ class MaskedSliceWav(object):
                 (vid, wav_path, mel_path) = s.strip().split('\t')
                 self.sample_catalog.append([int(vid), wav_path, mel_path])
 
+    def set_receptive_field_size(self, r_sz):
+        self.recep_field_sz = r_sz
+
+    def get_max_id(self):
+        max_el, _, _ = max(self.sample_catalog, key=lambda x: x[0])
+        return max_el
 
     def _gen_path(self):
         '''load a sample file with the format:
@@ -73,9 +78,9 @@ class MaskedSliceWav(object):
         while True:
             try:
                 vid, wav_path, mel_path = sess.run(next_el)
-                print(mel_path)
                 wav = np.load(wav_path.decode())
                 mel = np.load(mel_path.decode())
+                print('loaded wav and mel of size {}'.format(wav.data.nbytes + mel.data.nbytes))
                 yield int(vid), wav, mel
             except tf.errors.OutOfRangeError:
                 break
@@ -106,7 +111,8 @@ class MaskedSliceWav(object):
             spliced_mel = np.empty([0, self.mel_spectrum_sz], np.float)
             spliced_ids = np.empty(0, np.int32)
             recep_bound = self.recep_field_sz - 1
-            # idmap = np.array([0], np.int32)
+
+            def mc(val): return val // self.mel_hop_sz
 
             while True:
                 try:
@@ -137,27 +143,29 @@ class MaskedSliceWav(object):
                 while need_sz <= (wav_sz - cur_pos):
                     # print(str(need_sz) + ', ' + str(wav_sz - cur_pos))
                     # use up a chunk of the current item and yield the slice
-                    mel_cur_pos = cur_pos // self.mel_hop_sz
-                    mel_need_sz = need_sz // self.mel_hop_sz
-                    spliced_wav = np.append(spliced_wav, wav[cur_pos:cur_pos + need_sz],
+                    spliced_wav = np.append(spliced_wav,
+                            wav[cur_pos:cur_pos + need_sz],
                             axis=0)
+
                     spliced_mel = np.append(spliced_mel,
-                            mel[mel_cur_pos:mel_cur_pos + mel_need_sz], axis=0)
-                    spliced_ids = np.append(spliced_ids, ids[cur_pos:cur_pos + need_sz],
+                            mel[mc(cur_pos):mc(cur_pos + need_sz)],
+                            axis=0)
+
+                    spliced_ids = np.append(spliced_ids,
+                            ids[cur_pos:cur_pos + need_sz],
                             axis=0)
                     cur_pos += need_sz 
-                    yield spliced_wav, spliced_mel, spliced_ids #, idmap 
+                    yield spliced_wav, spliced_mel, spliced_ids
                     spliced_wav = np.empty(0, np.float) 
                     spliced_mel = np.empty([0, self.mel_spectrum_sz], np.float)
                     spliced_ids = np.empty(0, np.int32)
-                    # idmap = np.array([0, vid], np.int32)
                     need_sz = self.slice_sz 
 
                 if cur_pos != wav_sz:
                     # append this piece of wav to the current slice 
-                    spliced_wav = np.append(spliced_wav, wav[cur_pos:])
-                    spliced_mel = np.append(spliced_mel, mel[mel_cur_pos:])
-                    spliced_ids = np.append(spliced_ids, ids[cur_pos:])
+                    spliced_wav = np.append(spliced_wav, wav[cur_pos:], axis=0)
+                    spliced_mel = np.append(spliced_mel, mel[mc(cur_pos):], axis=0)
+                    spliced_ids = np.append(spliced_ids, ids[cur_pos:], axis=0)
                     need_sz -= (wav_sz - cur_pos)
             return
         return gen_fcn
@@ -208,7 +216,8 @@ class MaskedSliceWav(object):
                         (zero_d, zero_d, zero_d))
 
             with tf.name_scope('shuffle_repeat'):
-                ds = ds.shuffle(buffer_size=len(self.sample_catalog))
+                #ds = ds.shuffle(buffer_size=len(self.sample_catalog))
+                ds = ds.shuffle(buffer_size=100)
                 itr = ds.make_one_shot_iterator()
                 # used this so a reassignment of 'itr' doesn't break the code
                 def gen_wrap():

@@ -1,0 +1,12 @@
+{
+    "n_blocks": 5,
+    "n_block_layers": 10,
+    "n_quant": 256,
+    "n_res": 32,
+    "n_dil": 32,
+    "n_skip": 512,
+    "n_post1": 512,
+    "n_gc_embed": 17,
+    "n_gc_category": 377
+}
+ 

@@ -52,7 +52,7 @@ class WaveNetArch(object):
                 ArchCat.GATE: [2, self.n_res, self.n_dil],
                 ArchCat.GC_SIGNAL: [self.n_gc_embed, self.n_dil],
                 ArchCat.GC_GATE: [self.n_gc_embed, self.n_dil],
-                ArchCat.GC_EMBED: [self.n_gc_category, self.n_gc_embed],
+                ArchCat.GC_EMBED: [self.n_gc_category + 1, self.n_gc_embed],
                 ArchCat.LC_SIGNAL: [self.n_lc_out, self.n_dil],
                 ArchCat.LC_GATE: [self.n_lc_out, self.n_dil],
                 ArchCat.POST1: [self.n_skip, self.n_post],
