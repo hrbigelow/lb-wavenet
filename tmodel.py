@@ -25,7 +25,7 @@ class WaveNetTrain(ar.WaveNetArch):
                     name = 'one_hot_input')
         return wav_input_onehot
 
-    def _upsample_lc(self, lc_input):
+    def _preprocess_lc(self, lc_input):
         '''lc_input: batch x time x channel
         filt: stride '''
         lc_cur = lc_input 
@@ -43,7 +43,7 @@ class WaveNetTrain(ar.WaveNetArch):
         return lc_cur
 
 
-    def _preprocess(self, wav_input, lc_input):
+    def _preprocess(self, wav_input):
         '''entry point of data coming from data.Dataset.
         wav_input: B x T x Q
         '''  
@@ -53,16 +53,14 @@ class WaveNetTrain(ar.WaveNetArch):
             # gc_embeds[batch][t] = embedding vector
             self.gc_embeds = self.get_variable(ar.ArchCat.GC_EMBED)
 
-        # upsample lc_input
-        lc_upsampled = self._upsample_lc(lc_input)
-
         filt = self.get_variable(ar.ArchCat.PRE)
         trans = ops.conv1x1(wav_input, filt, self.batch_sz, 'conv')
         if self.use_bias:
             bias = self.get_variable(ar.ArchCat.PRE, get_bias=True)
             trans = tf.add(trans, bias)
 
-        return trans, lc_upsampled 
+        return trans
+
 
     def _map_embeds(self, id_masks, proj_filt, conv_name):
         '''create the batched, mapped, projected embedding.
@@ -76,7 +74,7 @@ class WaveNetTrain(ar.WaveNetArch):
         return proj_gathered
 
     
-    def _dilated_conv(self, prev_z, lc_input, dilation, id_masks, *var_indices): 
+    def _dilated_conv(self, prev_z, lc_upsampled, dilation, id_masks, *var_indices): 
         '''construct one dilated, gated convolution as in equation 2 of WaveNet
         Sept 2016
         prev_z[b][t][r], for batch b, time t, res channel r
@@ -120,10 +118,11 @@ class WaveNetTrain(ar.WaveNetArch):
                 gc_proj = self._map_embeds(id_masks, gc_filt, 'gc_proj_embed')
                 v[a] = tf.add(v[a], gc_proj, 'add')
 
-        for a, l in zip(sig_gate, sig_gate_lc): 
-            lc_filt = self.get_variable(l, *var_indices)
-            lc_proj = ops.conv1x1(lc_input, lc_filt, self.batch_sz, 'lc')
-            v[a] = tf.add(v[a], lc_proj, 'add')
+        if lc_upsampled is not None:
+            for a, l in zip(sig_gate, sig_gate_lc): 
+                lc_filt = self.get_variable(l, *var_indices)
+                lc_proj = ops.conv1x1(lc_upsampled, lc_filt, self.batch_sz, 'lc')
+                v[a] = tf.add(v[a], lc_proj, 'add')
 
         
         # ensure we update prev_z_save before movign on
@@ -227,8 +226,12 @@ class WaveNetTrain(ar.WaveNetArch):
         encoded_input = tf.stop_gradient(encoded_input)
 
         with tf.variable_scope('preprocess'):
-            cur, lc_upsampled = self._preprocess(encoded_input, lc_input)
-        #skps = []
+            cur = self._preprocess(encoded_input)
+
+        if self.use_lc_input():
+            lc_upsampled = self._preprocess_lc(lc_input)
+        else:
+            lc_upsampled = None
 
         for b in range(self.n_blocks):
             with tf.variable_scope('block{}'.format(b)):

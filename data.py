@@ -74,6 +74,7 @@ class MaskedSliceWav(object):
         load the .wav file contents into a vector and return a tuple
         generate tuples (voice_id, [wav_val, wav_val, ...])
         '''
+        assert not tf.executing_eagerly()
         next_el = path_itr.get_next()
         while True:
             try:
@@ -86,6 +87,19 @@ class MaskedSliceWav(object):
                 break
         return
 
+    def _wav_gen_eager(self, path_itr):
+        '''eager execution version of _wav_gen'''
+        assert tf.executing_eagerly()
+        while True:
+            try:
+                vid, wav_path, mel_path = path_itr.get_next() 
+                wav = np.load(wav_path.decode())
+                mel = np.load(mel_path.decode())
+                #print('loaded wav and mel of size {}'.format(wav.data.nbytes + mel.data.nbytes))
+                yield int(vid), wav, mel
+            except tf.errors.OutOfRangeError:
+                break
+        return
 
     def _gen_concat_slice_factory(self, wav_gen):
         '''factory function for creating a new generator
@@ -180,7 +194,10 @@ class MaskedSliceWav(object):
         b = batch, t = timestep, c = channel
         '''
         # construct the single (vid, wav) generator
-        wav_gen = self._wav_gen(path_itr, sess)
+        if tf.executing_eagerly():
+            wav_gen = self._wav_gen_eager(path_itr)
+        else:
+            wav_gen = self._wav_gen(path_itr, sess)
 
         # construct batch_sz slice generators, each sharing the same wav_gen
         gens = [self._gen_concat_slice_factory(wav_gen)() for _ in range(self.batch_sz)]

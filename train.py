@@ -30,6 +30,8 @@ def get_args():
             help='TensorBoard directory for writing summary events')
     parser.add_argument('--save-interval', '-si', type=int, default=1000, metavar='INT',
             help='Save a checkpoint after this many steps each time')
+    parser.add_argument('--tf-debug', '-tdb', action='store_true', default=False,
+            help='Enable tf_debug debugging console')
 
     # positional arguments
     parser.add_argument('ckpt_path', type=str, metavar='CKPT_PATH_PFX',
@@ -105,7 +107,8 @@ def main():
             print('Created dataset.', file=stderr)
 
             # Note that tfdbg can't run if this is before dset.wav_dataset call
-            # sess = tf_debug.LocalCLIDebugWrapperSession(sess)
+            if args.tf_debug:
+                sess = tf_debug.LocalCLIDebugWrapperSession(sess)
 
             loss = net.build_graph(wav_input, mel_input, id_masks)
             print('Built graph.', file=stderr)

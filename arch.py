@@ -62,6 +62,9 @@ class WaveNetArch(object):
     def has_global_cond(self):
         return self.n_gc_embed > 0
 
+    def use_lc_input(self):
+        return self.n_lc_out > 0
+
 
     def get_variable(self, arch, *var_indices, get_bias=False):
         '''wrapper for tf.get_variable that associates arch name with a shape
