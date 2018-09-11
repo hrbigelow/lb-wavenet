@@ -116,7 +116,7 @@ class WaveNetArch(object):
         if not self.graph_built:
             raise ValueError
         if self.saver is None:
-            self.saver = tf.train.Saver(self.vars)
+            self.saver = tf.train.Saver(self.vars, max_to_keep=self.max_to_keep)
 
     def _json_stem(self, json_file):
         import re
