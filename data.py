@@ -80,7 +80,7 @@ class MaskedSliceWav(object):
                 vid, wav_path, mel_path = sess.run(next_el)
                 wav = np.load(wav_path.decode())
                 mel = np.load(mel_path.decode())
-                print('loaded wav and mel of size {}'.format(wav.data.nbytes + mel.data.nbytes))
+                #print('loaded wav and mel of size {}'.format(wav.data.nbytes + mel.data.nbytes))
                 yield int(vid), wav, mel
             except tf.errors.OutOfRangeError:
                 break

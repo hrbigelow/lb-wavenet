@@ -28,6 +28,8 @@ def get_args():
             help='If present, do all computation on CPU')
     parser.add_argument('--tb-dir', '-tb', type=str, metavar='DIR',
             help='TensorBoard directory for writing summary events')
+    parser.add_argument('--save-interval', '-si', type=int, default=1000, metavar='INT',
+            help='Save a checkpoint after this many steps each time')
 
     # positional arguments
     parser.add_argument('ckpt_path', type=str, metavar='CKPT_PATH_PFX',
@@ -173,7 +175,7 @@ def main():
                 print('step, loss: {}\t{}'.format(step, loss_val), file=stderr)
                 if summary_op is not None:
                     fw.add_summary(sess.run(summary_op), step)
-            if step % 100 == 0:
+            if step % args.save_interval == 0:
                 path = net.save(sess, args.ckpt_path, step)
                 print('Saved checkpoint to %s\n' % path, file=stderr)
 
