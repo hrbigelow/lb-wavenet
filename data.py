@@ -55,9 +55,10 @@ class MaskedSliceWav(object):
         ...
         generate tuples (voice_id, wav_path, mel_path)
         '''
+        def enc(s): return bytes(s, 'utf-8')
         for s in self.sample_catalog:
             vid, wav_path, mel_path = s[0], s[1], s[2]
-            yield vid, wav_path, mel_path
+            yield vid, enc(wav_path), enc(mel_path)
         return
 
 
@@ -93,10 +94,10 @@ class MaskedSliceWav(object):
         while True:
             try:
                 vid, wav_path, mel_path = path_itr.get_next() 
-                wav = np.load(wav_path.decode())
-                mel = np.load(mel_path.decode())
+                wav = np.load(wav_path.numpy().decode())
+                mel = np.load(mel_path.numpy().decode())
                 #print('loaded wav and mel of size {}'.format(wav.data.nbytes + mel.data.nbytes))
-                yield int(vid), wav, mel
+                yield int(vid.numpy()), wav, mel
             except tf.errors.OutOfRangeError:
                 break
         return

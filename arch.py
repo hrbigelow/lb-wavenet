@@ -24,16 +24,18 @@ class WaveNetArch(object):
     training or inference.  Manages all trainable variables and their saving
     and restoring'''
 
-    def __init__(self, **kwargs):
+    def __init__(self, sess=None, **kwargs):
         self.__dict__.update(**kwargs)
 
+        self.sess = sess
         self.graph_built = False
         self.saver = None
         self.filter_init = tf.contrib.layers.xavier_initializer_conv2d()
         self.bias_init = tf.constant_initializer(value=0.0, dtype=tf.float32)
 
         # dict for use with save/restore 
-        self.vars = {}
+        # contains all of the model's trainable variables
+        self.trainable_vars = {}
 
         def _upsample_shape(i):
             if i == 0:
@@ -91,25 +93,25 @@ class WaveNetArch(object):
         serial_name = '_'.join(map(str, [name, *var_indices]))
 
         # make sure that serial_name and var are both new or both not new
-        sn_exists = serial_name in self.vars
-        var_exists = var in self.vars.values()
+        sn_exists = serial_name in self.trainable_vars
+        var_exists = var in self.trainable_vars.values()
         if sn_exists != var_exists:
             from sys import stderr
             if sn_exists:
                 print('Attempting to store {} under {}.\n' 
                         'Variable {} already stored there.'.format(
-                            var.op.name, serial_name, self.vars[serial_name].op.name),
+                            var.op.name, serial_name, self.trainable_vars[serial_name].op.name),
                         file=stderr)
                 exit(1)
             if var_exists:
-                existing_sn = next((v for k, v in self.vars.items() if v == var), None)
+                existing_sn = next((v for k, v in self.trainable_vars.items() if v == var), None)
                 print('Attempting to store {} under {}.\n' 
                         'Already stored under {}'.format(
                             var.name, serial_name, existing_sn),
                         file=stderr)
                 exit(1)
         
-        self.vars[serial_name] = var
+        self.trainable_vars[serial_name] = var
 
         if self.add_summary:
             tf.summary.histogram(name, var)
@@ -119,18 +121,24 @@ class WaveNetArch(object):
         if not self.graph_built:
             raise ValueError
         if self.saver is None:
-            self.saver = tf.train.Saver(self.vars, max_to_keep=self.max_to_keep)
+            if tf.executing_eagerly():
+                self.saver = tf.contrib.eager.Saver(self.trainable_vars)
+            else:
+                self.saver = tf.train.Saver(self.trainable_vars, max_to_keep=self.max_to_keep)
 
     def _json_stem(self, json_file):
         import re
         m = re.fullmatch('(.+)\.json', json_file)
         return m.group(1)
 
-    def save(self, sess, arch_pfx, step):
+    def save(self, arch_pfx, step):
         '''saves trainable variables, generating a special filename
         that encodes architectural parameters'''
         self._maybe_init_saver()
-        path_pfx = self.saver.save(sess, arch_pfx, step)
+        if tf.executing_eagerly():
+            path_pfx = self.saver.save(arch_pfx, step)
+        else:
+            path_pfx = self.saver.save(self.sess, arch_pfx, step)
         return path_pfx
 
     @staticmethod
@@ -140,7 +148,7 @@ class WaveNetArch(object):
         return ['{}.{}'.format(ckpt, s) for s in suffixes]
 
 
-    def restore(self, sess, ckpt_file):
+    def restore(self, ckpt_file):
         '''finds the appropriate checkpoint file saved by 'save' and loads into
         the existing graph'''
         from sys import stderr
@@ -150,7 +158,10 @@ class WaveNetArch(object):
                 print("Couldn't find checkpoint file {}".format(fn), file=stderr)
                 exit(1)
         self._maybe_init_saver()
-        self.saver.restore(sess, ckpt_file)
+        if tf.executing_eagerly():
+            self.saver.restore(ckpt_file)
+        else:
+            self.saver.restore(self.sess, ckpt_file)
     
 
 

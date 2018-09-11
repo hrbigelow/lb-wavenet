@@ -5,8 +5,8 @@ import ops
 
 class WaveNetTrain(ar.WaveNetArch):
 
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self, sess, **kwargs):
+        super().__init__(sess, **kwargs)
 
         self.l2_factor = kwargs['l2_factor']
         self.batch_sz = kwargs['batch_sz']
@@ -198,13 +198,9 @@ class WaveNetTrain(ar.WaveNetArch):
             with tf.name_scope('regularization'):
                 if l2_factor != 0:
                     l2_loss = tf.add_n([tf.nn.l2_loss(v)
-                        for v in tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES) 
-                        if not ('BIAS' in v.name)])
+                        for k, v in self.trainable_vars.items() if not 'BIAS' in k])
                 else:
-                    l2_loss = tf.add_n([tf.nn.l2_loss(v)
-                        for v in tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES) 
-                        if not ('BIAS' in v.name)])
-                    # l2_loss = 0
+                    l2_loss = 0
             mean_cross_ent = tf.Print(mean_cross_ent,
                     [mean_cross_ent, l2_loss], 'MeanXEnt, L2: ')
             total_loss = mean_cross_ent + l2_factor * l2_loss
@@ -263,4 +259,20 @@ class WaveNetTrain(ar.WaveNetArch):
         self.graph_built = True
 
         return loss 
+
+
+    def grad_var_loss(self, wav_input, lc_input, id_masks):
+        if tf.executing_eagerly():
+            with tf.GradientTape() as tape:
+                loss = self.build_graph(wav_input, lc_input, id_masks)
+                var_list = list(self.trainable_vars.values())
+            grads = tape.gradient(loss, var_list)
+            grads_vars = list(zip(grads, var_list))
+        else:
+            loss = self.build_graph(wav_input, lc_input, id_masks)
+            var_list = list(self.trainable_vars.values())
+            opt = tf.train.Optimizer(True, 'lb-wavenet')
+            grads_vars = opt.compute_gradients(loss, var_list) 
+
+        return grads_vars, loss
 

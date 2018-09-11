@@ -62,6 +62,8 @@ def main():
     from sys import stderr
     from os.path import join as path_join
 
+    tf.enable_eager_execution()
+
     with open(args.arch_file, 'r') as fp:
         arch = json.load(fp)
 
@@ -82,10 +84,19 @@ def main():
     dset.init_sample_catalog()
     n_gc_category = dset.get_max_id()
 
+    if tf.executing_eagerly():
+        sess = None
+    else:
+        config = tf.ConfigProto()
+        #config.gpu_options.per_process_gpu_memory_fraction = 0.2
+        config.gpu_options.allow_growth = True
+        config.allow_soft_placement = True
+        sess = tf.Session(config=config)
+        print('Created tf.Session.', file=stderr)
+
     net_args = { 'add_summary': args.add_summary,
             'n_gc_category': n_gc_category, **arch, **par }
-    net = tmodel.WaveNetTrain(**net_args)
-
+    net = tmodel.WaveNetTrain(sess, **net_args)
     dset.set_receptive_field_size(net.get_recep_field_sz())
 
     dev_string = '/cpu:0' if args.cpu_only else '/gpu:0'
@@ -95,13 +106,6 @@ def main():
             ctx = tf.contrib.tfprof.ProfileContext(args.prof_dir)
             ctx_obj = stack.enter_context(ctx)
             
-        config = tf.ConfigProto()
-        #config.gpu_options.per_process_gpu_memory_fraction = 0.2
-        config.gpu_options.allow_growth = True
-        config.allow_soft_placement = True
-        sess = tf.Session(config=config)
-        print('Created tf.Session.', file=stderr)
-
         with tf.device(dev_string):
             wav_input, mel_input, id_masks = dset.wav_dataset(sess)
             print('Created dataset.', file=stderr)
@@ -110,8 +114,9 @@ def main():
             if args.tf_debug:
                 sess = tf_debug.LocalCLIDebugWrapperSession(sess)
 
-            loss = net.build_graph(wav_input, mel_input, id_masks)
+            grads_and_vars, loss = net.grad_var_loss(wav_input, mel_input, id_masks)
             print('Built graph.', file=stderr)
+
 
         if args.resume_step: 
             ckpt = '{}-{}'.format(args.ckpt_path, args.resume_step)
@@ -119,7 +124,10 @@ def main():
             net.restore(sess, ckpt) 
         # print(sess.run(wav_input))
 
-        summary_op = tf.summary.merge_all()
+        if args.add_summary:
+            summary_op = tf.summary.merge_all()
+        else:
+            summary_op = None
 
         if summary_op is not None and args.tb_dir is None:
             print('Error: must provide --tb-dir argument if '
@@ -133,35 +141,27 @@ def main():
 
         with tf.device(dev_string):
             optimizer = tf.train.AdamOptimizer(learning_rate=par['learning_rate'])
-            train_vars = tf.trainable_variables()
             print('Created optimizer.', file=stderr)
 
-            # writing this out explicitly for educational purposes
-            step = args.resume_step or 0
-            global_step = tf.Variable(step, trainable=False)
-            grads_and_vars = optimizer.compute_gradients(loss, train_vars)
-            apply_grads = optimizer.apply_gradients(grads_and_vars, global_step)
+
+        if tf.executing_eagerly():
+            pass
+
+        else:
+            sess.run(tf.global_variables_initializer())
+            print('Initialized training graph.', file=stderr)
+
+            apply_grads = optimizer.apply_gradients(grads_and_vars)
             print('Created gradients.', file=stderr)
 
-            init = tf.global_variables_initializer()
-            sess.run(init)
-        print('Initialized training graph.', file=stderr)
-        
-        #ts = tests.get_tensor_sizes(sess)
-        #for t in ts:
-        #    print('{}\t{}\t{}\t{}'.format(t[0], t[1], t[2], t[3].size))
-        #exit(1)
-
-        sess.run(global_step.initializer)
-
         print('Starting training...', file=stderr)
-           
+        step = args.resume_step or 0
         while step < max_steps:
             if step == 5:
                 run_meta = tf.RunMetadata()
                 run_opts = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE,
                 output_partition_graphs=True)
-                _, step, _ = sess.run([apply_grads, global_step, loss],
+                _, step, _ = sess.run([apply_grads, loss],
                         options=run_opts, run_metadata=run_meta)
                 with open('/tmp/run.txt', 'w') as out:
                     out.write(str(run_meta))
@@ -179,8 +179,10 @@ def main():
                 if summary_op is not None:
                     fw.add_summary(sess.run(summary_op), step)
             if step % args.save_interval == 0:
-                path = net.save(sess, args.ckpt_path, step)
+                path = net.save(args.ckpt_path, step)
                 print('Saved checkpoint to %s\n' % path, file=stderr)
+
+            step += 1
 
 
 if __name__ == '__main__':
