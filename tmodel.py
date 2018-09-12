@@ -260,19 +260,19 @@ class WaveNetTrain(ar.WaveNetArch):
 
         return loss 
 
-
-    def grad_var_loss(self, wav_input, lc_input, id_masks):
-        if tf.executing_eagerly():
-            with tf.GradientTape() as tape:
-                loss = self.build_graph(wav_input, lc_input, id_masks)
-                var_list = list(self.trainable_vars.values())
-            grads = tape.gradient(loss, var_list)
-            grads_vars = list(zip(grads, var_list))
-        else:
+    def grad_var_loss_eager(self, wav_input, lc_input, id_masks):
+        with tf.GradientTape() as tape:
             loss = self.build_graph(wav_input, lc_input, id_masks)
             var_list = list(self.trainable_vars.values())
-            opt = tf.train.Optimizer(True, 'lb-wavenet')
-            grads_vars = opt.compute_gradients(loss, var_list) 
-
+        grads = tape.gradient(loss, var_list)
+        grads_vars = list(zip(grads, var_list))
         return grads_vars, loss
+
+
+    def grad_var_loss(self, wav_input, lc_input, id_masks):
+        loss_op = self.build_graph(wav_input, lc_input, id_masks)
+        var_list = list(self.trainable_vars.values())
+        opt = tf.train.Optimizer(True, 'lb-wavenet')
+        grads_vars_op = opt.compute_gradients(loss, var_list) 
+        return grads_vars_op, loss_op
 

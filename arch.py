@@ -33,6 +33,11 @@ class WaveNetArch(object):
         self.filter_init = tf.contrib.layers.xavier_initializer_conv2d()
         self.bias_init = tf.constant_initializer(value=0.0, dtype=tf.float32)
 
+        if tf.executing_eagerly():
+            import tensorflow.contrib.eager as tfe
+            self.container = tfe.EagerVariableStore() 
+
+
         # dict for use with save/restore 
         # contains all of the model's trainable variables
         self.trainable_vars = {}
@@ -89,27 +94,32 @@ class WaveNetArch(object):
             name = arch.name
             init = self.filter_init
 
-        var = tf.get_variable(name, shape, initializer=init)
+        if tf.executing_eagerly():
+            with self.container.as_default():
+                var = tf.get_variable(name, shape, initializer=init)
+        else:
+            var = tf.get_variable(name, shape, initializer=init)
+
         serial_name = '_'.join(map(str, [name, *var_indices]))
 
-        # make sure that serial_name and var are both new or both not new
+        # ensure we don't store the same variable under two different serialized names
         sn_exists = serial_name in self.trainable_vars
         var_exists = var in self.trainable_vars.values()
-        if sn_exists != var_exists:
+        if sn_exists and not var_exists:
             from sys import stderr
-            if sn_exists:
-                print('Attempting to store {} under {}.\n' 
-                        'Variable {} already stored there.'.format(
-                            var.op.name, serial_name, self.trainable_vars[serial_name].op.name),
-                        file=stderr)
-                exit(1)
-            if var_exists:
-                existing_sn = next((v for k, v in self.trainable_vars.items() if v == var), None)
-                print('Attempting to store {} under {}.\n' 
-                        'Already stored under {}'.format(
-                            var.name, serial_name, existing_sn),
-                        file=stderr)
-                exit(1)
+            print('Attempting to store variable {} under serial name {}.\n' 
+                    'Variable {} already stored there.'.format(
+                        var.name, serial_name, self.trainable_vars[serial_name].name),
+                    file=stderr)
+            exit(1)
+        if var_exists and not sn_exists:
+            from sys import stderr
+            existing_sn = next((v for k, v in self.trainable_vars.items() if v == var), None)
+            print('Attempting to store variable {} under serial name {}.\n' 
+                    'Already stored under serial name {}'.format(
+                        var.name, serial_name, existing_sn),
+                    file=stderr)
+            exit(1)
         
         self.trainable_vars[serial_name] = var
 

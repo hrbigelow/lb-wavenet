@@ -19,8 +19,9 @@ from sys import stderr
 
 class MaskedSliceWav(object):
 
-    def __init__(self, sam_file, sample_rate, slice_sz, prefetch_sz,
+    def __init__(self, sess, sam_file, sample_rate, slice_sz, prefetch_sz,
             mel_spectrum_sz, mel_hop_sz, batch_sz):
+        self.sess = sess
         self.sam_file = sam_file
         self.sample_rate = sample_rate
         self.prefetch_sz = prefetch_sz
@@ -70,7 +71,7 @@ class MaskedSliceWav(object):
         return audio
 
 
-    def _wav_gen(self, path_itr, sess):
+    def _wav_gen(self, path_itr):
         '''consume an iterator that yields [voice_id, wav_path].
         load the .wav file contents into a vector and return a tuple
         generate tuples (voice_id, [wav_val, wav_val, ...])
@@ -79,7 +80,7 @@ class MaskedSliceWav(object):
         next_el = path_itr.get_next()
         while True:
             try:
-                vid, wav_path, mel_path = sess.run(next_el)
+                vid, wav_path, mel_path = self.sess.run(next_el)
                 wav = np.load(wav_path.decode())
                 mel = np.load(mel_path.decode())
                 #print('loaded wav and mel of size {}'.format(wav.data.nbytes + mel.data.nbytes))
@@ -186,7 +187,7 @@ class MaskedSliceWav(object):
         return gen_fcn
 
 
-    def _gen_slice_batch(self, path_itr, sess):
+    def _gen_slice_batch(self, path_itr):
         '''generates a batch of concatenated slices
         yields:
         wav[b][t] = amplitude
@@ -198,7 +199,7 @@ class MaskedSliceWav(object):
         if tf.executing_eagerly():
             wav_gen = self._wav_gen_eager(path_itr)
         else:
-            wav_gen = self._wav_gen(path_itr, sess)
+            wav_gen = self._wav_gen(path_itr)
 
         # construct batch_sz slice generators, each sharing the same wav_gen
         gens = [self._gen_concat_slice_factory(wav_gen)() for _ in range(self.batch_sz)]
@@ -217,11 +218,11 @@ class MaskedSliceWav(object):
                 break
 
 
-    def wav_dataset(self, sess):
+    def wav_dataset(self):
         '''parse a sample file and create a ts.data.Dataset of concatenated,
         labeled slices from it.
-        returns:
-            wav: ['''
+        call this to create a fresh dataset.
+            '''
         zero_d = tf.TensorShape([])
         two_d = tf.TensorShape([self.batch_sz, None])
         three_d = tf.TensorShape([self.batch_sz, None, self.mel_spectrum_sz])
@@ -239,7 +240,7 @@ class MaskedSliceWav(object):
                 itr = ds.make_one_shot_iterator()
                 # used this so a reassignment of 'itr' doesn't break the code
                 def gen_wrap():
-                    return self._gen_slice_batch(gen_wrap.itr, sess)
+                    return self._gen_slice_batch(gen_wrap.itr)
                 gen_wrap.itr = itr
 
             with tf.name_scope('slice_batch'):
@@ -247,12 +248,17 @@ class MaskedSliceWav(object):
                         gen_wrap,
                         (tf.float32, tf.float32, tf.int32),
                         (two_d, three_d, two_d))
-                itr = ds.make_one_shot_iterator()
 
             with tf.name_scope('prefetch'):
                 ds = ds.prefetch(buffer_size=self.prefetch_sz)
-                ops = itr.get_next()
 
-        return ops 
-            
+        return ds
+
+    @staticmethod
+    def wav_dataset_itr(ds):
+        return ds.make_one_shot_iterator()
+
+    @staticmethod
+    def wav_dataset_ops(ds):
+        return wav_dataset_itr(ds).get_next()
 
