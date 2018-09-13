@@ -50,7 +50,7 @@ class WaveNetArch(object):
                 dim2 = self.n_lc_out 
             return [self.lc_upsample[i], self.n_lc_out, dim2]
 
-        def _save_var_shape(dilation):
+        def _save_var_shape(dilation, *ignored):
             return [self.batch_sz, dilation, self.n_res]
 
         self.shape = {

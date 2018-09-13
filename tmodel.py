@@ -84,7 +84,8 @@ class WaveNetTrain(ar.WaveNetArch):
         prev_z[b][t][r], for batch b, time t, res channel r
         '''
         # prev_z_save is already populated according to the current window
-        prev_z_save = self.get_variable(ar.ArchCat.SAVE, dilation, trainable=False)
+        prev_z_save = self.get_variable(ar.ArchCat.SAVE, dilation,
+                *var_indices, trainable=False)
 
         # prev_z_rand = tf.random_uniform(saved_shape)
         prev_z_full = tf.concat([prev_z_save, prev_z], 1, name='concat')
