@@ -102,9 +102,9 @@ def main():
 
     # tfdbg can't run if this is before dset.wav_dataset call
     if args.tf_debug: sess = tf_debug.LocalCLIDebugWrapperSession(sess)
-    net_args = { 'add_summary': args.add_summary,
-            'n_gc_category': n_gc_category, **arch, **par }
-    net = tmodel.WaveNetTrain(sess, **net_args)
+    net = tmodel.WaveNetTrain(sess,
+            add_summary=args.add_summary, 
+            n_gc_category=n_gc_category, **arch, **par)
     dset.set_receptive_field_size(net.get_recep_field_sz())
     wav_dset = dset.wav_dataset()
 
@@ -118,10 +118,10 @@ def main():
             
         # create the ops just once if not in eager mode
         if not args.tf_eager:
-            wav_input_op, mel_input_op, id_masks_op = dset.wav_dataset_ops(wav_dset) 
+            wav_input_op, mel_input_op, id_mask_op = dset.wav_dataset_ops(wav_dset) 
             print('Created dataset.', file=stderr)
             grads_and_vars_op, loss_op = \
-                    net.grad_var_loss(wav_input_op, mel_input_op, id_masks_op)
+                    net.grad_var_loss(wav_input_op, mel_input_op, id_mask_op)
             print('Built graph.', file=stderr)
 
             sess.run(tf.global_variables_initializer())
@@ -133,10 +133,11 @@ def main():
         else:
             # must call this to create the variables
             itr = dset.wav_dataset_itr(wav_dset)
-            wav_input, mel_input, id_masks = next(itr) 
-            _ = net.build_graph(wav_input, mel_input, id_masks)
+            wav_input, mel_input, id_mask = next(itr) 
+            _ = net.build_graph(wav_input, mel_input, id_mask)
             assert len(net.trainable_vars) > 0
-            tf.global_variables_initializer()
+            # it seems eager variables are initialized on creation
+            #tf.global_variables_initializer()
 
         if args.resume_step: 
             ckpt = '{}-{}'.format(args.ckpt_path, args.resume_step)
@@ -162,8 +163,8 @@ def main():
         wav_itr = dset.wav_dataset_itr(wav_dset)
         while step < max_steps:
             if args.tf_eager:
-                wav_input, mel_input, id_masks = next(wav_itr) 
-                grads_and_vars, loss = net.grad_var_loss_eager(wav_input, mel_input, id_masks)
+                wav_input, mel_input, id_mask = next(wav_itr) 
+                grads_and_vars, loss = net.grad_var_loss_eager(wav_input, mel_input, id_mask)
                 optimizer.apply_gradients(grads_and_vars)
 
             else:

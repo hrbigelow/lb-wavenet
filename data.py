@@ -246,7 +246,7 @@ class MaskedSliceWav(object):
             with tf.name_scope('slice_batch'):
                 ds = tf.data.Dataset.from_generator(
                         gen_wrap,
-                        (tf.float32, tf.float32, tf.int32),
+                        (tf.int32, tf.float32, tf.int32),
                         (two_d, three_d, two_d))
 
             with tf.name_scope('prefetch'):

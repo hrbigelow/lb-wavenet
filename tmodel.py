@@ -20,7 +20,11 @@ class WaveNetTrain(ar.WaveNetArch):
         wav_input_onehot[b][t][q] for batch b, time t, quant channel q
         '''
         with tf.name_scope('encode'):
-            wav_input_mu = ops.mu_encode(wav_input, self.n_quant)
+            if self.wav_input_type == 'mu_law_quant':
+                wav_input_mu = wav_input
+            elif self.wav_input_type == 'raw':
+                wav_input_mu = ops.mu_encode(wav_input, self.n_quant)
+
             wav_input_onehot = tf.one_hot(wav_input_mu, self.n_quant, axis = -1,
                     name = 'one_hot_input')
         return wav_input_onehot
@@ -62,32 +66,26 @@ class WaveNetTrain(ar.WaveNetArch):
         return trans
 
 
-    def _map_embeds(self, id_masks, proj_filt, conv_name):
+    def _map_embeds(self, id_mask, proj_filt, conv_name):
         '''create the batched, mapped, projected embedding.
-        id_masks: B x T = gc_id
+        id_mask: B x T = gc_id
         gc_tab: batch x index x n_gc_embed 
         proj_embeds: batch x index x n_dil
         proj_filt: n_gc_embed x n_dil
         returns [batch, index, n_dil]'''
-        gathered = tf.gather(self.gc_embeds, id_masks)
+        gathered = tf.gather(self.gc_embeds, id_mask)
         proj_gathered = ops.conv1x1(gathered, proj_filt, self.batch_sz, conv_name)
         return proj_gathered
 
     
-    def _dilated_conv(self, prev_z, lc_upsampled, dilation, id_masks, *var_indices): 
+    def _dilated_conv(self, prev_z, lc_upsampled, dilation, id_mask, *var_indices): 
         '''construct one dilated, gated convolution as in equation 2 of WaveNet
         Sept 2016
         prev_z[b][t][r], for batch b, time t, res channel r
         '''
-    
         # prev_z_save is already populated according to the current window
-        saved_shape = [self.batch_sz, dilation, self.n_res]
-        prev_z_save = tf.get_variable(
-                name='lookback_buffer',
-                shape=saved_shape,
-                initializer=tf.zeros_initializer,
-                trainable=False
-                )
+        prev_z_save = self.get_variable(ar.ArchCat.SAVE, dilation, trainable=False)
+
         # prev_z_rand = tf.random_uniform(saved_shape)
         prev_z_full = tf.concat([prev_z_save, prev_z], 1, name='concat')
         # prev_z_full = tf.concat([prev_z_save, prev_z], 1, name='concat')
@@ -115,7 +113,7 @@ class WaveNetTrain(ar.WaveNetArch):
         if self.has_global_cond():
             for a, g in zip(sig_gate, sig_gate_gc): 
                 gc_filt = self.get_variable(g, *var_indices)
-                gc_proj = self._map_embeds(id_masks, gc_filt, 'gc_proj_embed')
+                gc_proj = self._map_embeds(id_mask, gc_filt, 'gc_proj_embed')
                 v[a] = tf.add(v[a], gc_proj, 'add')
 
         if lc_upsampled is not None:
@@ -125,7 +123,7 @@ class WaveNetTrain(ar.WaveNetArch):
                 v[a] = tf.add(v[a], lc_proj, 'add')
 
         
-        # ensure we update prev_z_save before movign on
+        # ensure we update prev_z_save before moving on
         # should this have a tf.stop_gradient?  what would that mean?
         aop = tf.assign(prev_z_save, prev_z_full[:,-dilation:,:])
         with tf.control_dependencies([aop]):
@@ -180,7 +178,7 @@ class WaveNetTrain(ar.WaveNetArch):
         return dense2, softmax
 
 
-    def _loss_fcn(self, input, logits_out, id_masks, l2_factor):
+    def _loss_fcn(self, input, logits_out, id_mask, l2_factor):
         '''calculates cross-entropy loss with l2 regularization'''
         with tf.name_scope('loss'):
             shift_input = tf.stop_gradient(input[:,1:,:])
@@ -190,7 +188,7 @@ class WaveNetTrain(ar.WaveNetArch):
                     labels = shift_input,
                     logits = logits_out_clip,
                     dim=2)
-            id_mask = tf.stack(id_masks)
+            #id_mask = tf.stack(id_masks)
             use_mask = tf.cast(tf.not_equal(id_mask[:,1:], 0), tf.float32)
             cross_ent_filt = cross_ent * use_mask 
             # cross_ent_filt = cross_ent
@@ -208,14 +206,14 @@ class WaveNetTrain(ar.WaveNetArch):
         return total_loss
 
 
-    def build_graph(self, wav_input, lc_input, id_masks):
+    def build_graph(self, wav_input, lc_input, id_mask):
         '''creates the training graph and returns the loss node for the graph.
         the inputs to this function are data.Dataset.iterator.get_next() operations.
         This graph performs the forward calculation in parallel across
         a slice of time steps.  The loss compares these calculations with
         the next input value.
         wav_input: list of batch_sz wav_slices
-        id_masks: list of batch_sz id_masks
+        id_mask: B x T mask values (gc_id or 0, where 0 means invalid) 
         '''
 
         encoded_input = self.encode_input_onehot(wav_input)
@@ -235,7 +233,7 @@ class WaveNetTrain(ar.WaveNetArch):
                     with tf.variable_scope('layer{}'.format(bl)):
                         l = b * self.n_block_layers + bl
                         dil = 2**bl
-                        dconv = self._dilated_conv(cur, lc_upsampled, dil, id_masks, b, bl)
+                        dconv = self._dilated_conv(cur, lc_upsampled, dil, id_mask, b, bl)
                         sig, skp = self._chan_reduce(dconv, b, bl)
                         if b == 0 and bl == 0:
                             skp_sum = skp
@@ -247,12 +245,12 @@ class WaveNetTrain(ar.WaveNetArch):
         #skp_all = tf.add_n(skps, name='add_skip')
         logits, softmax_out = self._postprocess(skp_sum)
         # logits = self._postprocess(skp_all)
-        loss = self._loss_fcn(encoded_input, logits, id_masks, self.l2_factor)
+        loss = self._loss_fcn(encoded_input, logits, id_mask, self.l2_factor)
 
         diffs = tf.argmax(encoded_input[:,1:,:], 2) - tf.argmax(softmax_out[:,:-1,:], 2)
         absdiff = tf.abs(diffs)
         avg = tf.reduce_mean(absdiff)
-        sum_valid = tf.reduce_sum(id_masks)
+        sum_valid = tf.reduce_sum(id_mask)
 
         loss = tf.Print(loss, [sum_valid, avg], 'Sum_Masks, Avg_ArgMaxAbsDiff: ', summarize=130)
 
@@ -260,17 +258,17 @@ class WaveNetTrain(ar.WaveNetArch):
 
         return loss 
 
-    def grad_var_loss_eager(self, wav_input, lc_input, id_masks):
+    def grad_var_loss_eager(self, wav_input, lc_input, id_mask):
         with tf.GradientTape() as tape:
-            loss = self.build_graph(wav_input, lc_input, id_masks)
+            loss = self.build_graph(wav_input, lc_input, id_mask)
             var_list = list(self.trainable_vars.values())
         grads = tape.gradient(loss, var_list)
         grads_vars = list(zip(grads, var_list))
         return grads_vars, loss
 
 
-    def grad_var_loss(self, wav_input, lc_input, id_masks):
-        loss_op = self.build_graph(wav_input, lc_input, id_masks)
+    def grad_var_loss(self, wav_input, lc_input, id_mask):
+        loss_op = self.build_graph(wav_input, lc_input, id_mask)
         var_list = list(self.trainable_vars.values())
         opt = tf.train.Optimizer(True, 'lb-wavenet')
         grads_vars_op = opt.compute_gradients(loss, var_list) 

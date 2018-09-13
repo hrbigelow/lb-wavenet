@@ -16,6 +16,7 @@ class ArchCat(IntEnum):
     LC_GATE = 11
     POST1 = 12 
     POST2 = 13
+    SAVE = 14
 
 
 class WaveNetArch(object):
@@ -49,6 +50,9 @@ class WaveNetArch(object):
                 dim2 = self.n_lc_out 
             return [self.lc_upsample[i], self.n_lc_out, dim2]
 
+        def _save_var_shape(dilation):
+            return [self.batch_sz, dilation, self.n_res]
+
         self.shape = {
                 # shape, or function accepting var_indices and returning shape
                 ArchCat.PRE: [self.n_quant, self.n_res],
@@ -63,7 +67,8 @@ class WaveNetArch(object):
                 ArchCat.LC_SIGNAL: [self.n_lc_out, self.n_dil],
                 ArchCat.LC_GATE: [self.n_lc_out, self.n_dil],
                 ArchCat.POST1: [self.n_skip, self.n_post],
-                ArchCat.POST2: [self.n_post, self.n_quant]
+                ArchCat.POST2: [self.n_post, self.n_quant],
+                ArchCat.SAVE: _save_var_shape 
                 }
 
     def has_global_cond(self):
@@ -73,7 +78,7 @@ class WaveNetArch(object):
         return self.n_lc_out > 0
 
 
-    def get_variable(self, arch, *var_indices, get_bias=False):
+    def get_variable(self, arch, *var_indices, get_bias=False, **var_opts):
         '''wrapper for tf.get_variable that associates arch name with a shape
         
         arch:     enumeration specifying shape and semantics
@@ -96,9 +101,9 @@ class WaveNetArch(object):
 
         if tf.executing_eagerly():
             with self.container.as_default():
-                var = tf.get_variable(name, shape, initializer=init)
+                var = tf.get_variable(name, shape, initializer=init, **var_opts)
         else:
-            var = tf.get_variable(name, shape, initializer=init)
+            var = tf.get_variable(name, shape, initializer=init, **var_opts)
 
         serial_name = '_'.join(map(str, [name, *var_indices]))
 
