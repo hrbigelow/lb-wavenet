@@ -68,8 +68,14 @@ def main():
         print('Error: --tf-debug and --tf-eager cannot both be set', file=stderr)
         exit(1)
 
+    config = tf.ConfigProto()
+    #config.gpu_options.per_process_gpu_memory_fraction = 0.2
+    # config.log_device_placement = True
+    #config.gpu_options.allow_growth = True
+    #config.allow_soft_placement = True
+
     if args.tf_eager:
-        tf.enable_eager_execution()
+        tf.enable_eager_execution(config=config)
 
     with open(args.arch_file, 'r') as fp:
         arch = json.load(fp)
@@ -80,31 +86,29 @@ def main():
     if args.tf_eager:
         sess = None
     else:
-        config = tf.ConfigProto()
-        #config.gpu_options.per_process_gpu_memory_fraction = 0.2
-        config.gpu_options.allow_growth = True
-        config.allow_soft_placement = True
         sess = tf.Session(config=config)
         print('Created tf.Session.', file=stderr)
 
-    data_args = {
-            'sam_file': args.sam_file,
-            'sample_rate': par['sample_rate'],
-            'slice_sz': par['slice_sz'],
-            'prefetch_sz': par['prefetch_sz'],
-            'mel_spectrum_sz': arch['n_lc_in'],
-            'mel_hop_sz': arch['lc_hop_sz'],
-            'batch_sz': par['batch_sz']
-            }
-    dset = data.MaskedSliceWav(sess=sess, **data_args)
+    from functools import reduce
+    mel_hop_sz = reduce(lambda x, y: x * y, arch['lc_upsample']) 
+    
+    dset = data.MaskedSliceWav(sess, args.sam_file, par['sample_rate'],
+            par['slice_sz'], par['prefetch_sz'], arch['n_lc_in'],
+            mel_hop_sz, par['batch_sz'])
+            
     dset.init_sample_catalog()
-    n_gc_category = dset.get_max_id()
+    arch['n_gc_category'] = dset.get_max_id()
 
     # tfdbg can't run if this is before dset.wav_dataset call
     if args.tf_debug: sess = tf_debug.LocalCLIDebugWrapperSession(sess)
-    net = tmodel.WaveNetTrain(sess,
-            add_summary=args.add_summary, 
-            n_gc_category=n_gc_category, **arch, **par)
+
+    net = tmodel.WaveNetTrain(**arch,
+            batch_sz = par['batch_sz'],
+            l2_factor=par['l2_factor'],
+            add_summary=par['add_summary'],
+            n_keep_checkpoints=par['n_keep_checkpoints'],
+            sess=sess)
+
     dset.set_receptive_field_size(net.get_recep_field_sz())
     wav_dset = dset.wav_dataset()
 
@@ -114,8 +118,10 @@ def main():
         if args.prof_dir is not None:
             ctx = tf.contrib.tfprof.ProfileContext(args.prof_dir)
             ctx_obj = stack.enter_context(ctx)
-        stack.enter_context(tf.device(dev_string))
+        #stack.enter_context(tf.device(dev_string))
             
+        optimizer = tf.train.AdamOptimizer(learning_rate=par['learning_rate'])
+
         # create the ops just once if not in eager mode
         if not args.tf_eager:
             wav_input_op, mel_input_op, id_mask_op = dset.wav_dataset_ops(wav_dset) 
@@ -124,18 +130,18 @@ def main():
                     net.grad_var_loss(wav_input_op, mel_input_op, id_mask_op)
             print('Built graph.', file=stderr)
 
+            apply_grads_op = optimizer.apply_gradients(grads_and_vars_op)
+            print('Created gradients.', file=stderr)
+
             sess.run(tf.global_variables_initializer())
             print('Initialized training graph.', file=stderr)
-            
-            apply_grads_op = optimizer.apply_gradients(grads_and_vars)
-            print('Created gradients.', file=stderr)
 
         else:
             # must call this to create the variables
             itr = dset.wav_dataset_itr(wav_dset)
             wav_input, mel_input, id_mask = next(itr) 
             _ = net.build_graph(wav_input, mel_input, id_mask)
-            assert len(net.trainable_vars) > 0
+            assert len(net.vars) > 0
             # it seems eager variables are initialized on creation
             #tf.global_variables_initializer()
 
@@ -155,9 +161,6 @@ def main():
             fw = tf.summary.FileWriter(tb_dir, graph=sess.graph)
             make_flusher(fw)
 
-        optimizer = tf.train.AdamOptimizer(learning_rate=par['learning_rate'])
-        print('Created optimizer.', file=stderr)
-
         print('Starting training...', file=stderr)
         step = args.resume_step or 1
         wav_itr = dset.wav_dataset_itr(wav_dset)
@@ -172,7 +175,7 @@ def main():
                     run_meta = tf.RunMetadata()
                     run_opts = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE,
                     output_partition_graphs=True)
-                    _, _ = sess.run([apply_grads, loss],
+                    _, _ = sess.run([apply_grads_op, loss_op],
                             options=run_opts, run_metadata=run_meta)
                     with open('/tmp/run.txt', 'w') as out:
                         out.write(str(run_meta))
@@ -185,8 +188,8 @@ def main():
 
                 _, loss = sess.run([apply_grads_op, loss_op])
 
-            if step % 10 == 0:
-                print('step, loss: {}\t{}'.format(step, loss), file=stderr)
+            if step % 1 == 0:
+                # print('step, loss: {}\t{}'.format(step, loss), file=stderr)
                 if args.tf_eager and summary_op is not None:
                     fw.add_summary(sess.run(summary_op), step)
 

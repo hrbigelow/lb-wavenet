@@ -5,11 +5,40 @@ import ops
 
 class WaveNetTrain(ar.WaveNetArch):
 
-    def __init__(self, sess, **kwargs):
-        super().__init__(sess, **kwargs)
+    def __init__(self, 
+            # all args from arch.json 
+            n_blocks,
+            n_block_layers,
+            n_quant,
+            n_res,
+            n_dil,
+            n_skip,
+            n_post,
+            n_gc_embed,
+            n_gc_category,
+            n_lc_in,
+            n_lc_out,
+            lc_upsample,
+            use_bias,
+            wav_input_type,
+            # args from par.json 
+            batch_sz,
+            l2_factor,
+            add_summary,
+            n_keep_checkpoints,
+            # other arguments
+            sess
+            ):
+        super().__init__(batch_sz, n_quant, n_res, n_dil, n_skip,
+                n_post, n_gc_embed, n_gc_category, n_lc_in, n_lc_out, 
+                add_summary, n_keep_checkpoints, sess)
 
-        self.l2_factor = kwargs['l2_factor']
-        self.batch_sz = kwargs['batch_sz']
+        self.n_blocks = n_blocks
+        self.n_block_layers = n_block_layers
+        self.lc_upsample = lc_upsample
+        self.use_bias = use_bias
+        self.wav_input_type = wav_input_type
+        self.l2_factor = l2_factor
         
     def get_recep_field_sz(self):
         return self.n_blocks * sum([2**l for l in range(self.n_block_layers)])
@@ -189,22 +218,21 @@ class WaveNetTrain(ar.WaveNetArch):
                     labels = shift_input,
                     logits = logits_out_clip,
                     dim=2)
-            #id_mask = tf.stack(id_masks)
             use_mask = tf.cast(tf.not_equal(id_mask[:,1:], 0), tf.float32)
             cross_ent_filt = cross_ent * use_mask 
             # cross_ent_filt = cross_ent
-            mean_cross_ent = tf.reduce_mean(cross_ent_filt)
+            #mean_cross_ent = tf.reduce_mean(cross_ent_filt)
+            sum_cross_ent = tf.reduce_sum(cross_ent_filt)
             with tf.name_scope('regularization'):
                 if l2_factor != 0:
                     l2_loss = tf.add_n([tf.nn.l2_loss(v)
-                        for k, v in self.trainable_vars.items() if not 'BIAS' in k])
+                        for k, v in self.vars.items() if not 'BIAS' in k
+                        and v.trainable])
                 else:
                     l2_loss = 0
-            mean_cross_ent = tf.Print(mean_cross_ent,
-                    [mean_cross_ent, l2_loss], 'MeanXEnt, L2: ')
-            total_loss = mean_cross_ent + l2_factor * l2_loss
+            total_loss = sum_cross_ent + l2_factor * l2_loss
 
-        return total_loss
+        return total_loss, sum_cross_ent, l2_loss
 
 
     def build_graph(self, wav_input, lc_input, id_mask):
@@ -240,20 +268,18 @@ class WaveNetTrain(ar.WaveNetArch):
                             skp_sum = skp
                         else:
                             skp_sum = tf.add(skp_sum, skp, name='add_skip')
-                        #skps.append(skp)
                         cur = tf.add(cur, sig, name='residual_add') 
 
-        #skp_all = tf.add_n(skps, name='add_skip')
         logits, softmax_out = self._postprocess(skp_sum)
-        # logits = self._postprocess(skp_all)
-        loss = self._loss_fcn(encoded_input, logits, id_mask, self.l2_factor)
+        loss, sum_xent, l2_loss = self._loss_fcn(encoded_input, logits, id_mask, self.l2_factor)
 
         diffs = tf.argmax(encoded_input[:,1:,:], 2) - tf.argmax(softmax_out[:,:-1,:], 2)
         absdiff = tf.abs(diffs)
-        avg = tf.reduce_mean(absdiff)
+        avg_diff = tf.reduce_mean(absdiff)
         sum_valid = tf.reduce_sum(id_mask)
 
-        loss = tf.Print(loss, [sum_valid, avg], 'Sum_Masks, Avg_ArgMaxAbsDiff: ', summarize=130)
+        loss = tf.Print(loss, [loss, sum_xent, l2_loss, avg_diff, sum_valid],
+                'loss, xent, l2, av_diff, n_valid', summarize=130)
 
         self.graph_built = True
 
@@ -262,16 +288,17 @@ class WaveNetTrain(ar.WaveNetArch):
     def grad_var_loss_eager(self, wav_input, lc_input, id_mask):
         with tf.GradientTape() as tape:
             loss = self.build_graph(wav_input, lc_input, id_mask)
-            var_list = list(self.trainable_vars.values())
+            var_list = [v for v in self.vars.values() if v.trainable]
         grads = tape.gradient(loss, var_list)
         grads_vars = list(zip(grads, var_list))
+        # print('Variables with gradients: ', len(grads_vars))
         return grads_vars, loss
 
 
     def grad_var_loss(self, wav_input, lc_input, id_mask):
         loss_op = self.build_graph(wav_input, lc_input, id_mask)
-        var_list = list(self.trainable_vars.values())
+        var_list = [v for v in self.vars.values() if v.trainable]
         opt = tf.train.Optimizer(True, 'lb-wavenet')
-        grads_vars_op = opt.compute_gradients(loss, var_list) 
+        grads_vars_op = opt.compute_gradients(loss_op, var_list) 
         return grads_vars_op, loss_op
 

@@ -9,7 +9,6 @@
     "n_gc_embed": 16,
     "n_lc_in": 80,
     "n_lc_out": 0,
-    "lc_hop_sz": 256,
     "lc_upsample": [4, 4, 4, 4],
     "use_bias": true,
     "wav_input_type": "mu_law_quant"

@@ -260,5 +260,5 @@ class MaskedSliceWav(object):
 
     @staticmethod
     def wav_dataset_ops(ds):
-        return wav_dataset_itr(ds).get_next()
+        return ds.make_one_shot_iterator().get_next()
 

@@ -25,10 +25,35 @@ class WaveNetArch(object):
     training or inference.  Manages all trainable variables and their saving
     and restoring'''
 
-    def __init__(self, sess=None, **kwargs):
-        self.__dict__.update(**kwargs)
-
+    def __init__(self,
+            batch_sz,
+            n_quant,
+            n_res,
+            n_dil,
+            n_skip,
+            n_post,
+            n_gc_embed,
+            n_gc_category,
+            n_lc_in,
+            n_lc_out,
+            add_summary=False,
+            n_keep_checkpoints=10,
+            sess=None 
+            ):
+        self.batch_sz = batch_sz
+        self.n_quant = n_quant
+        self.n_res = n_res
+        self.n_dil = n_dil
+        self.n_skip = n_skip
+        self.n_post = n_post
+        self.n_gc_embed = n_gc_embed
+        self.n_gc_category = n_gc_category
+        self.n_lc_in = n_lc_in
+        self.n_lc_out = n_lc_out
+        self.add_summary = add_summary
+        self.n_keep_checkpoints = n_keep_checkpoints
         self.sess = sess
+
         self.graph_built = False
         self.saver = None
         self.filter_init = tf.contrib.layers.xavier_initializer_conv2d()
@@ -41,7 +66,7 @@ class WaveNetArch(object):
 
         # dict for use with save/restore 
         # contains all of the model's trainable variables
-        self.trainable_vars = {}
+        self.vars = {}
 
         def _upsample_shape(i):
             if i == 0:
@@ -108,25 +133,25 @@ class WaveNetArch(object):
         serial_name = '_'.join(map(str, [name, *var_indices]))
 
         # ensure we don't store the same variable under two different serialized names
-        sn_exists = serial_name in self.trainable_vars
-        var_exists = var in self.trainable_vars.values()
+        sn_exists = serial_name in self.vars
+        var_exists = var in self.vars.values()
         if sn_exists and not var_exists:
             from sys import stderr
             print('Attempting to store variable {} under serial name {}.\n' 
                     'Variable {} already stored there.'.format(
-                        var.name, serial_name, self.trainable_vars[serial_name].name),
+                        var.name, serial_name, self.vars[serial_name].name),
                     file=stderr)
             exit(1)
         if var_exists and not sn_exists:
             from sys import stderr
-            existing_sn = next((v for k, v in self.trainable_vars.items() if v == var), None)
+            existing_sn = next((v for k, v in self.vars.items() if v == var), None)
             print('Attempting to store variable {} under serial name {}.\n' 
                     'Already stored under serial name {}'.format(
                         var.name, serial_name, existing_sn),
                     file=stderr)
             exit(1)
         
-        self.trainable_vars[serial_name] = var
+        self.vars[serial_name] = var
 
         if self.add_summary:
             tf.summary.histogram(name, var)
@@ -137,9 +162,10 @@ class WaveNetArch(object):
             raise ValueError
         if self.saver is None:
             if tf.executing_eagerly():
-                self.saver = tf.contrib.eager.Saver(self.trainable_vars)
+                self.saver = tf.contrib.eager.Saver(self.vars)
             else:
-                self.saver = tf.train.Saver(self.trainable_vars, max_to_keep=self.max_to_keep)
+                self.saver = tf.train.Saver(self.vars,
+                        max_to_keep=self.n_keep_checkpoints)
 
     def _json_stem(self, json_file):
         import re

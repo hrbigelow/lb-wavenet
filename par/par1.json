@@ -1,9 +1,11 @@
 {
     "batch_sz": 10,
     "sample_rate": 16000,
-    "slice_sz": 10240,
+    "slice_sz": 512,
     "l2_factor": 0.001,
     "learning_rate": 0.001,
-    "prefetch_sz": 10
+    "prefetch_sz": 10,
+    "add_summary": false,
+    "n_keep_checkpoints": 10
 }
 

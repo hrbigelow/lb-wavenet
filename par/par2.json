@@ -4,6 +4,8 @@
     "slice_sz": 1024,
     "l2_factor": 0.001,
     "learning_rate": 0.001,
-    "prefetch_sz": 10
+    "prefetch_sz": 10,
+    "add_summary": false,
+    "n_keep_checkpoints": 10
 }
 
