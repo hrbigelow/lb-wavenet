@@ -211,6 +211,7 @@ class WaveNetTrain(ar.WaveNetArch):
     def _loss_fcn(self, input, logits_out, id_mask, l2_factor):
         '''calculates cross-entropy loss with l2 regularization'''
         with tf.name_scope('loss'):
+            # logits_out[0] is the prediction for input[1] 
             shift_input = tf.stop_gradient(input[:,1:,:])
             logits_out_clip = logits_out[:,:-1,:]
             
@@ -280,6 +281,7 @@ class WaveNetTrain(ar.WaveNetArch):
         loss, sum_xent, l2_loss, n_valid = \
                 self._loss_fcn(encoded_input, logits, id_mask, self.l2_factor)
 
+        # softmax[0] is the prediction for input[1]
         diffs = tf.argmax(encoded_input[:,1:,:], 2) - tf.argmax(softmax_out[:,:-1,:], 2)
         avg_diff = tf.reduce_mean(tf.abs(diffs))
 

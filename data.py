@@ -59,7 +59,7 @@ class MaskedSliceWav(object):
         def enc(s): return bytes(s, 'utf-8')
         for s in self.sample_catalog:
             vid, wav_path, mel_path = s[0], s[1], s[2]
-            print('Parsing ', wav_path, file=stderr)
+            #print('Parsing ', wav_path, file=stderr)
             yield vid, enc(wav_path), enc(mel_path)
         return
 
@@ -84,7 +84,8 @@ class MaskedSliceWav(object):
                 vid, wav_path, mel_path = self.sess.run(next_el)
                 wav = np.load(wav_path.decode())
                 mel = np.load(mel_path.decode())
-                #print('loaded wav and mel of size {}'.format(wav.data.nbytes + mel.data.nbytes))
+                #print('loaded wav and mel of size {}'.format(wav.data.nbytes + mel.data.nbytes),
+                #        file=stderr)
                 yield int(vid), wav, mel
             except tf.errors.OutOfRangeError:
                 break
@@ -98,7 +99,8 @@ class MaskedSliceWav(object):
                 vid, wav_path, mel_path = path_itr.get_next() 
                 wav = np.load(wav_path.numpy().decode())
                 mel = np.load(mel_path.numpy().decode())
-                #print('loaded wav and mel of size {}'.format(wav.data.nbytes + mel.data.nbytes))
+                #print('loaded wav and mel of size {}'.format(wav.data.nbytes + mel.data.nbytes),
+                #        file=stderr)
                 yield int(vid.numpy()), wav, mel
             except tf.errors.OutOfRangeError:
                 break
