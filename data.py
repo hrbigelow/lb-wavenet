@@ -59,6 +59,7 @@ class MaskedSliceWav(object):
         def enc(s): return bytes(s, 'utf-8')
         for s in self.sample_catalog:
             vid, wav_path, mel_path = s[0], s[1], s[2]
+            print('Parsing ', wav_path, file=stderr)
             yield vid, enc(wav_path), enc(mel_path)
         return
 
@@ -235,8 +236,9 @@ class MaskedSliceWav(object):
                         (zero_d, zero_d, zero_d))
 
             with tf.name_scope('shuffle_repeat'):
-                #ds = ds.shuffle(buffer_size=len(self.sample_catalog))
-                ds = ds.shuffle(buffer_size=100)
+                ds = ds.repeat()
+                ds = ds.shuffle(buffer_size=len(self.sample_catalog))
+                # ds = ds.shuffle(buffer_size=100)
                 itr = ds.make_one_shot_iterator()
                 # used this so a reassignment of 'itr' doesn't break the code
                 def gen_wrap():

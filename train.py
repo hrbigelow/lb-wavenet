@@ -35,9 +35,18 @@ def get_args():
     parser.add_argument('--tf-eager', '-te', action='store_true', default=False,
             help='Enable tf Eager mode')
 
+    # Training parameter overrides
+    parser.add_argument('--slice-size', '-ss', type=int, metavar='INT',
+            help='Slice size (overrides PAR_FILE setting)')
+    parser.add_argument('--l2-factor', '-l2', type=float, metavar='FLOAT',
+            help='Loss = Xent loss + l2_factor * l2_loss')
+    parser.add_argument('--learning-rate', '-lr', type=float, metavar='FLOAT',
+            help='Learning rate (overrides PAR_FILE setting)')
+
     # positional arguments
     parser.add_argument('ckpt_path', type=str, metavar='CKPT_PATH_PFX',
-            help='E.g. /path/to/ckpt/pfx, a path and prefix combination for writing checkpoint files')
+            help='E.g. /path/to/ckpt/pfx, a path and '
+            'prefix combination for writing checkpoint files')
     parser.add_argument('arch_file', type=str, metavar='ARCH_FILE',
             help='JSON file specifying architectural parameters')
     parser.add_argument('par_file', type=str, metavar='PAR_FILE',
@@ -83,6 +92,16 @@ def main():
     with open(args.par_file, 'r') as fp:
         par = json.load(fp)
 
+    # Overrides
+    if args.slice_size is not None:
+        par['slice_sz'] = args.slice_size
+
+    if args.l2_factor is not None:
+        par['l2_factor'] = args.l2_factor
+        
+    if args.learning_rate is not None:
+        par['learning_rate'] = args.learning_rate
+        
     if args.tf_eager:
         sess = None
     else:
@@ -148,7 +167,7 @@ def main():
         if args.resume_step: 
             ckpt = '{}-{}'.format(args.ckpt_path, args.resume_step)
             print('Restoring from {}'.format(ckpt))
-            net.restore(sess, ckpt) 
+            net.restore(ckpt) 
 
 
         summary_op = tf.summary.merge_all() if args.add_summary else None

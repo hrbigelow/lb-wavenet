@@ -1,5 +1,5 @@
 {
-    "batch_sz": 5,
+    "batch_sz": 2,
     "sample_rate": 16000,
     "slice_sz": 1024,
     "l2_factor": 0.001,

@@ -220,19 +220,25 @@ class WaveNetTrain(ar.WaveNetArch):
                     dim=2)
             use_mask = tf.cast(tf.not_equal(id_mask[:,1:], 0), tf.float32)
             cross_ent_filt = cross_ent * use_mask 
+            n_valid_examples = tf.reduce_sum(use_mask)
             # cross_ent_filt = cross_ent
             #mean_cross_ent = tf.reduce_mean(cross_ent_filt)
             sum_cross_ent = tf.reduce_sum(cross_ent_filt)
+            mean_cross_ent = sum_cross_ent / (n_valid_examples + 1e-10)
+
             with tf.name_scope('regularization'):
                 if l2_factor != 0:
                     l2_loss = tf.add_n([tf.nn.l2_loss(v)
                         for k, v in self.vars.items() if not 'BIAS' in k
                         and v.trainable])
                 else:
-                    l2_loss = 0
-            total_loss = sum_cross_ent + l2_factor * l2_loss
+                    l2_loss = tf.add_n([tf.nn.l2_loss(v)
+                        for k, v in self.vars.items() if not 'BIAS' in k
+                        and v.trainable])
+                    #l2_loss = 0
+            total_loss = mean_cross_ent + l2_factor * l2_loss
 
-        return total_loss, sum_cross_ent, l2_loss
+        return total_loss, mean_cross_ent, l2_loss, n_valid_examples
 
 
     def build_graph(self, wav_input, lc_input, id_mask):
@@ -271,14 +277,13 @@ class WaveNetTrain(ar.WaveNetArch):
                         cur = tf.add(cur, sig, name='residual_add') 
 
         logits, softmax_out = self._postprocess(skp_sum)
-        loss, sum_xent, l2_loss = self._loss_fcn(encoded_input, logits, id_mask, self.l2_factor)
+        loss, sum_xent, l2_loss, n_valid = \
+                self._loss_fcn(encoded_input, logits, id_mask, self.l2_factor)
 
         diffs = tf.argmax(encoded_input[:,1:,:], 2) - tf.argmax(softmax_out[:,:-1,:], 2)
-        absdiff = tf.abs(diffs)
-        avg_diff = tf.reduce_mean(absdiff)
-        sum_valid = tf.reduce_sum(id_mask)
+        avg_diff = tf.reduce_mean(tf.abs(diffs))
 
-        loss = tf.Print(loss, [loss, sum_xent, l2_loss, avg_diff, sum_valid],
+        loss = tf.Print(loss, [loss, sum_xent, l2_loss, avg_diff, n_valid],
                 'loss, xent, l2, av_diff, n_valid', summarize=130)
 
         self.graph_built = True
@@ -290,6 +295,9 @@ class WaveNetTrain(ar.WaveNetArch):
             loss = self.build_graph(wav_input, lc_input, id_mask)
             var_list = [v for v in self.vars.values() if v.trainable]
         grads = tape.gradient(loss, var_list)
+        mean_grads = [tf.reduce_mean(tf.abs(g)) for g in grads if g is not None]
+        print('Average magnitude of all gradients: ', sum(mean_grads).numpy() / len(mean_grads))
+
         grads_vars = list(zip(grads, var_list))
         # print('Variables with gradients: ', len(grads_vars))
         return grads_vars, loss
