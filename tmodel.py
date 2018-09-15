@@ -214,19 +214,22 @@ class WaveNetTrain(ar.WaveNetArch):
             # logits_out[0] is the prediction for input[1] 
             shift_input = tf.stop_gradient(input[:,1:,:])
             logits_out_clip = logits_out[:,:-1,:]
+            use_mask = tf.cast(tf.not_equal(id_mask[:,1:], 0), tf.int64)
+            use_mask_f = tf.cast(use_mask, tf.float32)
             
             cross_ent = tf.nn.softmax_cross_entropy_with_logits_v2(
-                    labels = shift_input,
-                    logits = logits_out_clip,
-                    dim=2)
-            use_mask = tf.cast(tf.not_equal(id_mask[:,1:], 0), tf.float32)
-            cross_ent_filt = cross_ent * use_mask 
-            n_valid_examples = tf.reduce_sum(use_mask)
+                    labels = shift_input, logits = logits_out_clip, dim=2)
+            cross_ent_filt = cross_ent * use_mask_f
+
+            # how far off is the most likely predicted value from the one-hot?
+            diffs = tf.argmax(shift_input, 2) - tf.argmax(logits_out_clip, 2)
+            avg_diff = tf.reduce_mean(tf.abs(diffs * use_mask))
+
+            n_valid_examples = tf.reduce_sum(use_mask_f)
             # cross_ent_filt = cross_ent
             #mean_cross_ent = tf.reduce_mean(cross_ent_filt)
             sum_cross_ent = tf.reduce_sum(cross_ent_filt)
             mean_cross_ent = sum_cross_ent / (n_valid_examples + 1e-10)
-
             with tf.name_scope('regularization'):
                 if l2_factor != 0:
                     l2_loss = tf.add_n([tf.nn.l2_loss(v)
@@ -239,7 +242,8 @@ class WaveNetTrain(ar.WaveNetArch):
                     #l2_loss = 0
             total_loss = mean_cross_ent + l2_factor * l2_loss
 
-        return total_loss, mean_cross_ent, l2_loss, n_valid_examples
+
+        return total_loss, mean_cross_ent, l2_loss, avg_diff, n_valid_examples
 
 
     def build_graph(self, wav_input, lc_input, id_mask):
@@ -278,14 +282,11 @@ class WaveNetTrain(ar.WaveNetArch):
                         cur = tf.add(cur, sig, name='residual_add') 
 
         logits, softmax_out = self._postprocess(skp_sum)
-        loss, sum_xent, l2_loss, n_valid = \
+        loss, sum_xent, l2_loss, max_abs_diff, n_valid = \
                 self._loss_fcn(encoded_input, logits, id_mask, self.l2_factor)
 
         # softmax[0] is the prediction for input[1]
-        diffs = tf.argmax(encoded_input[:,1:,:], 2) - tf.argmax(softmax_out[:,:-1,:], 2)
-        avg_diff = tf.reduce_mean(tf.abs(diffs))
-
-        loss = tf.Print(loss, [loss, sum_xent, l2_loss, avg_diff, n_valid],
+        loss = tf.Print(loss, [loss, sum_xent, l2_loss, max_abs_diff, n_valid],
                 'loss, xent, l2, av_diff, n_valid', summarize=130)
 
         self.graph_built = True
