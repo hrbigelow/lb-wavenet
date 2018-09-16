@@ -1,7 +1,7 @@
 import tensorflow as tf
 import arch as ar 
 import ops
-
+from sys import stderr
 
 class WaveNetTrain(ar.WaveNetArch):
 
@@ -27,7 +27,9 @@ class WaveNetTrain(ar.WaveNetArch):
             add_summary,
             n_keep_checkpoints,
             # other arguments
-            sess
+            sess,
+            print_interval,
+            initial_step
             ):
         super().__init__(batch_sz, n_quant, n_res, n_dil, n_skip,
                 n_post, n_gc_embed, n_gc_category, n_lc_in, n_lc_out, 
@@ -39,6 +41,8 @@ class WaveNetTrain(ar.WaveNetArch):
         self.use_bias = use_bias
         self.wav_input_type = wav_input_type
         self.l2_factor = l2_factor
+        self.print_interval = print_interval
+        self.initial_step = initial_step
         
     def get_recep_field_sz(self):
         return self.n_blocks * sum([2**l for l in range(self.n_block_layers)])
@@ -210,6 +214,12 @@ class WaveNetTrain(ar.WaveNetArch):
 
     def _loss_fcn(self, input, logits_out, id_mask, l2_factor):
         '''calculates cross-entropy loss with l2 regularization'''
+        with tf.variable_scope('config'):
+            #print_interval_ten = tf.get_variable('print_interval', (), tf.int32,
+            #        initializer=tf.constant_initializer(self.print_interval))
+            global_step_ten = tf.get_variable('global_step', (), tf.int32,
+                    initializer=tf.constant_initializer(self.initial_step))
+
         with tf.name_scope('loss'):
             # logits_out[0] is the prediction for input[1] 
             shift_input = tf.stop_gradient(input[:,1:,:])
@@ -226,8 +236,7 @@ class WaveNetTrain(ar.WaveNetArch):
             avg_diff = tf.reduce_mean(tf.abs(diffs * use_mask))
 
             n_valid_examples = tf.reduce_sum(use_mask_f)
-            # cross_ent_filt = cross_ent
-            #mean_cross_ent = tf.reduce_mean(cross_ent_filt)
+       
             sum_cross_ent = tf.reduce_sum(cross_ent_filt)
             mean_cross_ent = sum_cross_ent / (n_valid_examples + 1e-10)
             with tf.name_scope('regularization'):
@@ -240,10 +249,30 @@ class WaveNetTrain(ar.WaveNetArch):
                         for k, v in self.vars.items() if not 'BIAS' in k
                         and v.trainable])
                     #l2_loss = 0
+
             total_loss = mean_cross_ent + l2_factor * l2_loss
 
+            def _pr_progress(*scalars):
+                print('step, loss, xent, l2, av_diff, n_valid:\t'
+                        '{:5d}\t{:8.4f}\t{:8.4f}\t{:7.2f}\t{:5.0f}\t{:5.0f}'.format(
+                            *scalars), file=stderr)
+                return True 
 
-        return total_loss, mean_cross_ent, l2_loss, avg_diff, n_valid_examples
+            # strangely, the call to tf.py_func must be made inside of tf.cond
+            # or else it will run unconditionally
+            maybe_print_op = tf.cond(tf.equal(global_step_ten % self.print_interval, 0),
+                    lambda: tf.py_func(_pr_progress,
+                            [global_step_ten, total_loss, mean_cross_ent,
+                                l2_loss, avg_diff, n_valid_examples],
+                            tf.bool),
+                    lambda: True 
+                    )
+            inc_step_op = tf.assign(global_step_ten, global_step_ten + 1)
+
+            with tf.control_dependencies([inc_step_op, maybe_print_op]):
+                total_loss = tf.identity(total_loss)
+
+        return total_loss
 
 
     def build_graph(self, wav_input, lc_input, id_mask):
@@ -282,16 +311,13 @@ class WaveNetTrain(ar.WaveNetArch):
                         cur = tf.add(cur, sig, name='residual_add') 
 
         logits, softmax_out = self._postprocess(skp_sum)
-        loss, sum_xent, l2_loss, max_abs_diff, n_valid = \
-                self._loss_fcn(encoded_input, logits, id_mask, self.l2_factor)
+        loss = self._loss_fcn(encoded_input, logits, id_mask, self.l2_factor)
 
         # softmax[0] is the prediction for input[1]
-        loss = tf.Print(loss, [loss, sum_xent, l2_loss, max_abs_diff, n_valid],
-                'loss, xent, l2, av_diff, n_valid', summarize=130)
-
         self.graph_built = True
 
         return loss 
+
 
     def grad_var_loss_eager(self, wav_input, lc_input, id_mask):
         with tf.GradientTape() as tape:

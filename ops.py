@@ -54,3 +54,9 @@ def conv1x1(input, filt, batch_sz, name='conv1x1'):
         conv = tf.matmul(input, fb)
     return conv
 
+
+def weval(sess, *tensors):
+    if tf.executing_eagerly():
+        return [t.numpy() for t in tensors]
+    else:
+        return [t.eval(session=sess) for t in tensors]

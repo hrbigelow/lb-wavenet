@@ -30,6 +30,8 @@ def get_args():
             help='TensorBoard directory for writing summary events')
     parser.add_argument('--save-interval', '-si', type=int, default=1000, metavar='INT',
             help='Save a checkpoint after this many steps each time')
+    parser.add_argument('--progress-interval', '-pi', type=int, default=10, metavar='INT',
+            help='Print a progress message at this interval')
     parser.add_argument('--tf-debug', '-tdb', action='store_true', default=False,
             help='Enable tf_debug debugging console')
     parser.add_argument('--tf-eager', '-te', action='store_true', default=False,
@@ -126,7 +128,10 @@ def main():
             l2_factor=par['l2_factor'],
             add_summary=par['add_summary'],
             n_keep_checkpoints=par['n_keep_checkpoints'],
-            sess=sess)
+            sess=sess,
+            print_interval=args.progress_interval,
+            initial_step=args.resume_step or 0
+            )
 
     dset.set_receptive_field_size(net.get_recep_field_sz())
     wav_dset = dset.wav_dataset()
@@ -152,17 +157,15 @@ def main():
             apply_grads_op = optimizer.apply_gradients(grads_and_vars_op)
             print('Created gradients.', file=stderr)
 
-            sess.run(tf.global_variables_initializer())
-            print('Initialized training graph.', file=stderr)
-
         else:
             # must call this to create the variables
             itr = dset.wav_dataset_itr(wav_dset)
             wav_input, mel_input, id_mask = next(itr) 
             _ = net.build_graph(wav_input, mel_input, id_mask)
             assert len(net.vars) > 0
-            # it seems eager variables are initialized on creation
-            #tf.global_variables_initializer()
+
+        net.init_vars()
+        print('Initialized training graph.', file=stderr)
 
         if args.resume_step: 
             ckpt = '{}-{}'.format(args.ckpt_path, args.resume_step)
@@ -212,7 +215,7 @@ def main():
                 if args.tf_eager and summary_op is not None:
                     fw.add_summary(sess.run(summary_op), step)
 
-            if step % args.save_interval == 0:
+            if step % args.save_interval == 0 and step != args.resume_step:
                 path = net.save(args.ckpt_path, step)
                 print('Saved checkpoint to %s\n' % path, file=stderr)
 
