@@ -64,14 +64,6 @@ class MaskedSliceWav(object):
         return
 
 
-    def _read_wav_file(self, wav_file):
-        '''read the contents of a wav file, returning np.ndarray'''
-        audio, _ = librosa.load(wav_file, sr=self.sample_rate, mono=True)
-        print('Reading %s' % wav_file, file=stderr)
-        #audio = audio.reshape(-1, 1)
-        return audio
-
-
     def _wav_gen(self, path_itr):
         '''consume an iterator that yields [voice_id, wav_path].
         load the .wav file contents into a vector and return a tuple

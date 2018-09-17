@@ -1,6 +1,6 @@
 {
-    "n_blocks": 1,
-    "n_block_layers": 3,
+    "n_blocks": 5,
+    "n_block_layers": 10,
     "n_quant": 256,
     "n_res": 3,
     "n_dil": 4,

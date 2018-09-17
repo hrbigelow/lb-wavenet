@@ -253,7 +253,7 @@ class WaveNetTrain(ar.WaveNetArch):
             total_loss = mean_cross_ent + l2_factor * l2_loss
 
             def _pr_progress(*scalars):
-                print('step, loss, xent, l2, av_diff, n_valid:\t'
+                print(#'step, loss, xent, l2, av_diff, n_valid:\t'
                         '{:5d}\t{:8.4f}\t{:8.4f}\t{:7.2f}\t{:5.0f}\t{:5.0f}'.format(
                             *scalars), file=stderr)
                 return True 
@@ -267,9 +267,10 @@ class WaveNetTrain(ar.WaveNetArch):
                             tf.bool),
                     lambda: True 
                     )
-            inc_step_op = tf.assign(global_step_ten, global_step_ten + 1)
+            with tf.control_dependencies([maybe_print_op]):
+                inc_step_op = tf.assign(global_step_ten, global_step_ten + 1)
 
-            with tf.control_dependencies([inc_step_op, maybe_print_op]):
+            with tf.control_dependencies([inc_step_op]):
                 total_loss = tf.identity(total_loss)
 
         return total_loss
@@ -325,7 +326,7 @@ class WaveNetTrain(ar.WaveNetArch):
             var_list = [v for v in self.vars.values() if v.trainable]
         grads = tape.gradient(loss, var_list)
         mean_grads = [tf.reduce_mean(tf.abs(g)) for g in grads if g is not None]
-        print('Average magnitude of all gradients: ', sum(mean_grads).numpy() / len(mean_grads))
+        # print('Average magnitude of all gradients: ', sum(mean_grads).numpy() / len(mean_grads))
 
         grads_vars = list(zip(grads, var_list))
         # print('Variables with gradients: ', len(grads_vars))

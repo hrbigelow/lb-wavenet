@@ -19,7 +19,7 @@ def get_args():
     parser.add_argument('--prof-dir', '-pd', type=str, metavar='DIR',
             help='Output profiling events to <prof_dir> for use with ' +
             'TensorFlow Profiler')
-    parser.add_argument('--resume-step', '-r', type=int, metavar='INT',
+    parser.add_argument('--resume-step', '-rs', type=int, metavar='INT',
             help='Resume training from '
             + 'CKPT_DIR/<ckpt_pfx>-<resume_step>.{meta,index,data-..}')
     parser.add_argument('--add-summary', '-s', action='store_true', default=False,
@@ -38,12 +38,16 @@ def get_args():
             help='Enable tf Eager mode')
 
     # Training parameter overrides
+    parser.add_argument('--batch-size', '-bs', type=int, metavar='INT',
+            help='Batch size (overrides PAR_FILE setting)')
     parser.add_argument('--slice-size', '-ss', type=int, metavar='INT',
             help='Slice size (overrides PAR_FILE setting)')
     parser.add_argument('--l2-factor', '-l2', type=float, metavar='FLOAT',
             help='Loss = Xent loss + l2_factor * l2_loss')
     parser.add_argument('--learning-rate', '-lr', type=float, metavar='FLOAT',
             help='Learning rate (overrides PAR_FILE setting)')
+    parser.add_argument('--num-global-cond', '-gc', type=int, metavar='INT',
+            help='Number of global conditioning categories')
 
     # positional arguments
     parser.add_argument('ckpt_path', type=str, metavar='CKPT_PATH_PFX',
@@ -95,6 +99,9 @@ def main():
         par = json.load(fp)
 
     # Overrides
+    if args.batch_size is not None:
+        par['batch_sz'] = args.batch_size
+
     if args.slice_size is not None:
         par['slice_sz'] = args.slice_size
 
@@ -118,7 +125,14 @@ def main():
             mel_hop_sz, par['batch_sz'])
             
     dset.init_sample_catalog()
-    arch['n_gc_category'] = dset.get_max_id()
+        
+    if args.num_global_cond is not None:
+        if args.num_global_cond < dset.get_max_id():
+            print('Error: --num-global-cond must be >= {}, the highest ID in the dataset.'.format(
+                dset.get_max_id()), file=stderr)
+            exit(1)
+        else:
+            arch['n_gc_category'] = args.num_global_cond
 
     # tfdbg can't run if this is before dset.wav_dataset call
     if args.tf_debug: sess = tf_debug.LocalCLIDebugWrapperSession(sess)

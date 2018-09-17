@@ -7,6 +7,7 @@
     "n_skip": 512,
     "n_post": 512,
     "n_gc_embed": 16,
+    "n_gc_category": 376,
     "n_lc_in": 80,
     "n_lc_out": 80,
     "lc_upsample": [4, 4, 4, 4],
