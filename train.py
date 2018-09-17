@@ -146,11 +146,13 @@ def main():
     # tfdbg can't run if this is before dset.wav_dataset call
     if args.tf_debug: sess = tf_debug.LocalCLIDebugWrapperSession(sess)
 
-    net = tmodel.WaveNetTrain(**arch,
+    net = tmodel.WaveNetTrain(
+            **arch,
             batch_sz = par['batch_sz'],
             l2_factor=par['l2_factor'],
             add_summary=par['add_summary'],
             n_keep_checkpoints=par['n_keep_checkpoints'],
+            n_valid_total=par['n_valid_total'],
             sess=sess,
             print_interval=args.progress_interval,
             initial_step=args.resume_step or 0
@@ -171,10 +173,8 @@ def main():
 
         # create the ops just once if not in eager mode
         if not args.tf_eager:
-            wav_input_op, mel_input_op, id_mask_op = dset.wav_dataset_ops(wav_dset) 
-            print('Created dataset.', file=stderr)
             grads_and_vars_op, loss_op = \
-                    net.grad_var_loss(wav_input_op, mel_input_op, id_mask_op)
+                    net.grad_var_loss(*dset.wav_dataset_ops(wav_dset))
             print('Built graph.', file=stderr)
 
             apply_grads_op = optimizer.apply_gradients(grads_and_vars_op)
@@ -183,8 +183,7 @@ def main():
         else:
             # must call this to create the variables
             itr = dset.wav_dataset_itr(wav_dset)
-            wav_input, mel_input, id_mask = next(itr) 
-            _ = net.build_graph(wav_input, mel_input, id_mask)
+            _ = net.build_graph(*next(itr))
             assert len(net.vars) > 0
 
         net.init_vars()

@@ -26,6 +26,7 @@ class WaveNetTrain(ar.WaveNetArch):
             l2_factor,
             add_summary,
             n_keep_checkpoints,
+            n_valid_total,
             # other arguments
             sess,
             print_interval,
@@ -41,6 +42,7 @@ class WaveNetTrain(ar.WaveNetArch):
         self.use_bias = use_bias
         self.wav_input_type = wav_input_type
         self.l2_factor = l2_factor
+        self.n_valid_total = n_valid_total
         self.print_interval = print_interval
         self.initial_step = initial_step
         
@@ -218,15 +220,15 @@ class WaveNetTrain(ar.WaveNetArch):
             #print_interval_ten = tf.get_variable('print_interval', (), tf.int32,
             #        initializer=tf.constant_initializer(self.print_interval))
             global_step = self.get_variable(ar.ArchCat.GLOBAL_STEP,
-                    initializer=tf.zeros_initializer, trainable=False)
+                    initializer=tf.zeros_initializer, dtype=tf.int32, trainable=False)
             n_valid_cumul = self.get_variable(ar.ArchCat.VALID_SAMPLES,
-                    initializer=tf.zeros_initializer, trainable=False)
+                    initializer=tf.zeros_initializer, dtype=tf.int32, trainable=False)
 
         with tf.name_scope('loss'):
             # logits_out[0] is the prediction for input[1] 
             shift_input = tf.stop_gradient(input[:,1:,:])
             logits_out_clip = logits_out[:,:-1,:]
-            use_mask = tf.cast(tf.not_equal(id_mask[:,1:], 0), tf.int64)
+            use_mask = tf.cast(tf.not_equal(id_mask[:,1:], 0), tf.int32)
             use_mask_f = tf.cast(use_mask, tf.float32)
             
             cross_ent = tf.nn.softmax_cross_entropy_with_logits_v2(
@@ -234,13 +236,16 @@ class WaveNetTrain(ar.WaveNetArch):
             cross_ent_filt = cross_ent * use_mask_f
 
             # how far off is the most likely predicted value from the one-hot?
-            diffs = tf.argmax(shift_input, 2) - tf.argmax(logits_out_clip, 2)
+            diffs = tf.argmax(shift_input, 2, output_type=tf.int32) \
+                    - tf.argmax(logits_out_clip, 2, output_type=tf.int32)
             avg_diff = tf.reduce_mean(tf.abs(diffs * use_mask))
 
-            n_valid = tf.reduce_sum(use_mask_f)
-       
+            n_valid = tf.reduce_sum(use_mask)
             sum_cross_ent = tf.reduce_sum(cross_ent_filt)
-            mean_cross_ent = sum_cross_ent / (n_valid + 1e-10)
+            mean_cross_ent = tf.cond(tf.equal(n_valid, 0),
+                    lambda: 0.0,
+                    lambda: sum_cross_ent / tf.cast(n_valid, dtype=tf.float32)
+                    )
             with tf.name_scope('regularization'):
                 if l2_factor != 0:
                     l2_loss = tf.add_n([tf.nn.l2_loss(v)
@@ -256,7 +261,8 @@ class WaveNetTrain(ar.WaveNetArch):
 
             def _pr_progress(*scalars):
                 print(#'step, loss, xent, l2, av_diff, n_valid:\t'
-                        '{:5d}\t{:8.4f}\t{:8.4f}\t{:7.2f}\t{:5.0f}\t{:5.0f}\t{:10.0f}'.format(
+                        ('{:5d}\t{:8.4f}\t{:8.4f}\t{:7.2f}\t'
+                            '{:5.0f}\t{:5.0f}\t{:10d}\t{:14d}\t{:5.2f}').format(
                             *scalars), file=stderr)
                 return True 
 
@@ -265,7 +271,10 @@ class WaveNetTrain(ar.WaveNetArch):
             maybe_print_op = tf.cond(tf.equal(global_step % self.print_interval, 0),
                     lambda: tf.py_func(_pr_progress,
                             [global_step, total_loss, mean_cross_ent,
-                                l2_loss, avg_diff, n_valid, n_valid_cumul],
+                                l2_loss, avg_diff, n_valid, n_valid_cumul,
+                                self.n_valid_total,
+                                tf.cast(n_valid_cumul, tf.float32) * 100 / self.n_valid_total
+                                ],
                             tf.bool),
                     lambda: True 
                     )

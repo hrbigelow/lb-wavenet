@@ -6,6 +6,7 @@
     "learning_rate": 0.001,
     "prefetch_sz": 10,
     "add_summary": false,
-    "n_keep_checkpoints": 10
+    "n_keep_checkpoints": 10,
+    "n_valid_total": 3263771401
 }
 
