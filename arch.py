@@ -17,6 +17,8 @@ class ArchCat(IntEnum):
     POST1 = 12 
     POST2 = 13
     SAVE = 14
+    GLOBAL_STEP = 15 # global training step count
+    VALID_SAMPLES = 16 # number of valid samples seen so far
 
 
 class WaveNetArch(object):
@@ -94,7 +96,9 @@ class WaveNetArch(object):
                 ArchCat.LC_GATE: [self.n_lc_out, self.n_dil],
                 ArchCat.POST1: [self.n_skip, self.n_post],
                 ArchCat.POST2: [self.n_post, self.n_quant],
-                ArchCat.SAVE: _save_var_shape 
+                ArchCat.SAVE: _save_var_shape,
+                ArchCat.GLOBAL_STEP: [],
+                ArchCat.VALID_SAMPLES: []
                 }
 
     def has_global_cond(self):
@@ -125,11 +129,14 @@ class WaveNetArch(object):
             name = arch.name
             init = self.filter_init
 
+        # override default initializer
+        var_opts.setdefault('initializer', init)
+
         if tf.executing_eagerly():
             with self.container.as_default():
-                var = tf.get_variable(name, shape, initializer=init, **var_opts)
+                var = tf.get_variable(name, shape, **var_opts)
         else:
-            var = tf.get_variable(name, shape, initializer=init, **var_opts)
+            var = tf.get_variable(name, shape, **var_opts)
 
         serial_name = '_'.join(map(str, [name, *var_indices]))
 

@@ -68,20 +68,34 @@ def get_args():
 def main():
     args = get_args()
 
-    import tmodel
-    import data
-    import tensorflow as tf
     import json
-    import contextlib
-    from tensorflow.python import debug as tf_debug
-    from tensorflow.python.client import timeline
-    import tests
     from sys import stderr
-    from os.path import join as path_join
+
+    with open(args.arch_file, 'r') as fp:
+        arch = json.load(fp)
+
+    with open(args.par_file, 'r') as fp:
+        par = json.load(fp)
+
+    # args consistency checks
+    if args.num_global_cond is None and 'n_gc_category' not in arch:
+        print('Error: must provide n_gc_category in ARCH_FILE, or --num-global-cond',
+                file=stderr)
+        exit(1)
 
     if args.tf_eager and args.tf_debug:
         print('Error: --tf-debug and --tf-eager cannot both be set', file=stderr)
         exit(1)
+
+    import tmodel
+    import data
+    import tensorflow as tf
+    import contextlib
+    from tensorflow.python import debug as tf_debug
+    from tensorflow.python.client import timeline
+    import tests
+    from os.path import join as path_join
+
 
     config = tf.ConfigProto()
     #config.gpu_options.per_process_gpu_memory_fraction = 0.2
@@ -91,12 +105,6 @@ def main():
 
     if args.tf_eager:
         tf.enable_eager_execution(config=config)
-
-    with open(args.arch_file, 'r') as fp:
-        arch = json.load(fp)
-
-    with open(args.par_file, 'r') as fp:
-        par = json.load(fp)
 
     # Overrides
     if args.batch_size is not None:
@@ -110,7 +118,8 @@ def main():
         
     if args.learning_rate is not None:
         par['learning_rate'] = args.learning_rate
-        
+
+
     if args.tf_eager:
         sess = None
     else:
@@ -225,7 +234,6 @@ def main():
                 _, loss = sess.run([apply_grads_op, loss_op])
 
             if step % 1 == 0:
-                # print('step, loss: {}\t{}'.format(step, loss), file=stderr)
                 if args.tf_eager and summary_op is not None:
                     fw.add_summary(sess.run(summary_op), step)
 

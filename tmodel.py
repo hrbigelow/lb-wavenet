@@ -217,8 +217,10 @@ class WaveNetTrain(ar.WaveNetArch):
         with tf.variable_scope('config'):
             #print_interval_ten = tf.get_variable('print_interval', (), tf.int32,
             #        initializer=tf.constant_initializer(self.print_interval))
-            global_step_ten = tf.get_variable('global_step', (), tf.int32,
-                    initializer=tf.constant_initializer(self.initial_step))
+            global_step = self.get_variable(ar.ArchCat.GLOBAL_STEP,
+                    initializer=tf.zeros_initializer, trainable=False)
+            n_valid_cumul = self.get_variable(ar.ArchCat.VALID_SAMPLES,
+                    initializer=tf.zeros_initializer, trainable=False)
 
         with tf.name_scope('loss'):
             # logits_out[0] is the prediction for input[1] 
@@ -235,10 +237,10 @@ class WaveNetTrain(ar.WaveNetArch):
             diffs = tf.argmax(shift_input, 2) - tf.argmax(logits_out_clip, 2)
             avg_diff = tf.reduce_mean(tf.abs(diffs * use_mask))
 
-            n_valid_examples = tf.reduce_sum(use_mask_f)
+            n_valid = tf.reduce_sum(use_mask_f)
        
             sum_cross_ent = tf.reduce_sum(cross_ent_filt)
-            mean_cross_ent = sum_cross_ent / (n_valid_examples + 1e-10)
+            mean_cross_ent = sum_cross_ent / (n_valid + 1e-10)
             with tf.name_scope('regularization'):
                 if l2_factor != 0:
                     l2_loss = tf.add_n([tf.nn.l2_loss(v)
@@ -254,23 +256,24 @@ class WaveNetTrain(ar.WaveNetArch):
 
             def _pr_progress(*scalars):
                 print(#'step, loss, xent, l2, av_diff, n_valid:\t'
-                        '{:5d}\t{:8.4f}\t{:8.4f}\t{:7.2f}\t{:5.0f}\t{:5.0f}'.format(
+                        '{:5d}\t{:8.4f}\t{:8.4f}\t{:7.2f}\t{:5.0f}\t{:5.0f}\t{:10.0f}'.format(
                             *scalars), file=stderr)
                 return True 
 
             # strangely, the call to tf.py_func must be made inside of tf.cond
             # or else it will run unconditionally
-            maybe_print_op = tf.cond(tf.equal(global_step_ten % self.print_interval, 0),
+            maybe_print_op = tf.cond(tf.equal(global_step % self.print_interval, 0),
                     lambda: tf.py_func(_pr_progress,
-                            [global_step_ten, total_loss, mean_cross_ent,
-                                l2_loss, avg_diff, n_valid_examples],
+                            [global_step, total_loss, mean_cross_ent,
+                                l2_loss, avg_diff, n_valid, n_valid_cumul],
                             tf.bool),
                     lambda: True 
                     )
             with tf.control_dependencies([maybe_print_op]):
-                inc_step_op = tf.assign(global_step_ten, global_step_ten + 1)
+                inc_step_op = tf.assign(global_step, global_step + 1)
+                inc_valid_op = tf.assign(n_valid_cumul, n_valid_cumul + n_valid)
 
-            with tf.control_dependencies([inc_step_op]):
+            with tf.control_dependencies([inc_step_op, inc_valid_op]):
                 total_loss = tf.identity(total_loss)
 
         return total_loss
