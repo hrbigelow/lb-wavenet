@@ -129,9 +129,11 @@ def main():
     from functools import reduce
     mel_hop_sz = reduce(lambda x, y: x * y, arch['lc_upsample']) 
     
+    dset_ckpt = '{}.dset'.format(args.ckpt_path)
     dset = data.MaskedSliceWav(sess, args.sam_file, par['sample_rate'],
             par['slice_sz'], par['prefetch_sz'], arch['n_lc_in'],
-            mel_hop_sz, par['batch_sz'])
+            mel_hop_sz, par['batch_sz'], par['n_keep_checkpoints'],
+            dset_ckpt, args.resume_step or 0)
             
     dset.init_sample_catalog()
         
@@ -146,20 +148,23 @@ def main():
     # tfdbg can't run if this is before dset.wav_dataset call
     if args.tf_debug: sess = tf_debug.LocalCLIDebugWrapperSession(sess)
 
+    net_ckpt = '{}.net'.format(args.ckpt_path)
     net = tmodel.WaveNetTrain(
             **arch,
             batch_sz = par['batch_sz'],
             l2_factor=par['l2_factor'],
             add_summary=par['add_summary'],
             n_keep_checkpoints=par['n_keep_checkpoints'],
+            ckpt_path=net_ckpt,
+            resume_step=args.resume_step or 0,
             n_valid_total=par['n_valid_total'],
             sess=sess,
-            print_interval=args.progress_interval,
-            initial_step=args.resume_step or 0
+            print_interval=args.progress_interval
             )
 
+    # this is where dset is annoyingly dependent on net 
     dset.set_receptive_field_size(net.get_recep_field_sz())
-    wav_dset = dset.wav_dataset()
+    dset.init_dataset()
 
     dev_string = '/cpu:0' if args.cpu_only else '/gpu:0'
 
@@ -174,7 +179,7 @@ def main():
         # create the ops just once if not in eager mode
         if not args.tf_eager:
             grads_and_vars_op, loss_op = \
-                    net.grad_var_loss(*dset.wav_dataset_ops(wav_dset))
+                    net.grad_var_loss(*dset.get_op())
             print('Built graph.', file=stderr)
 
             apply_grads_op = optimizer.apply_gradients(grads_and_vars_op)
@@ -182,7 +187,7 @@ def main():
 
         else:
             # must call this to create the variables
-            itr = dset.wav_dataset_itr(wav_dset)
+            itr = dset.get_itr()
             _ = net.build_graph(*next(itr))
             assert len(net.vars) > 0
 
@@ -190,8 +195,6 @@ def main():
         print('Initialized training graph.', file=stderr)
 
         if args.resume_step: 
-            ckpt = '{}-{}'.format(args.ckpt_path, args.resume_step)
-            print('Restoring from {}'.format(ckpt))
             net.restore(ckpt) 
 
 
@@ -207,7 +210,7 @@ def main():
 
         print('Starting training...', file=stderr)
         step = args.resume_step or 1
-        wav_itr = dset.wav_dataset_itr(wav_dset)
+        wav_itr = dset.get_itr()
         while step < max_steps:
             if args.tf_eager:
                 wav_input, mel_input, id_mask = next(wav_itr) 

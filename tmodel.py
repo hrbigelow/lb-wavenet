@@ -26,15 +26,16 @@ class WaveNetTrain(ar.WaveNetArch):
             l2_factor,
             add_summary,
             n_keep_checkpoints,
+            ckpt_path,
+            resume_step,
             n_valid_total,
             # other arguments
             sess,
-            print_interval,
-            initial_step
+            print_interval
             ):
         super().__init__(batch_sz, n_quant, n_res, n_dil, n_skip,
                 n_post, n_gc_embed, n_gc_category, n_lc_in, n_lc_out, 
-                add_summary, n_keep_checkpoints, sess)
+                add_summary, n_keep_checkpoints, ckpt_path, resume_step, sess)
 
         self.n_blocks = n_blocks
         self.n_block_layers = n_block_layers
@@ -44,7 +45,7 @@ class WaveNetTrain(ar.WaveNetArch):
         self.l2_factor = l2_factor
         self.n_valid_total = n_valid_total
         self.print_interval = print_interval
-        self.initial_step = initial_step
+        self.resume_step = resume_step 
         
     def get_recep_field_sz(self):
         return self.n_blocks * sum([2**l for l in range(self.n_block_layers)])
@@ -326,8 +327,7 @@ class WaveNetTrain(ar.WaveNetArch):
         logits, softmax_out = self._postprocess(skp_sum)
         loss = self._loss_fcn(encoded_input, logits, id_mask, self.l2_factor)
 
-        # softmax[0] is the prediction for input[1]
-        self.graph_built = True
+        self.add_saveable_objects(self.vars)
 
         return loss 
 

@@ -15,13 +15,15 @@
 import librosa
 import tensorflow as tf
 import numpy as np
+import ckpt
 from sys import stderr
 
-class MaskedSliceWav(object):
+class MaskedSliceWav(ckpt.Checkpoint):
 
     def __init__(self, sess, sam_file, sample_rate, slice_sz, prefetch_sz,
-            mel_spectrum_sz, mel_hop_sz, batch_sz):
-        self.sess = sess
+            mel_spectrum_sz, mel_hop_sz, batch_sz, n_keep_checkpoints,
+            ckpt_path, resume_step):
+        super().__init__(ckpt_path, n_keep_checkpoints, resume_step, sess)
         self.sam_file = sam_file
         self.sample_rate = sample_rate
         self.prefetch_sz = prefetch_sz
@@ -213,7 +215,7 @@ class MaskedSliceWav(object):
                 break
 
 
-    def wav_dataset(self):
+    def init_dataset(self):
         '''parse a sample file and create a ts.data.Dataset of concatenated,
         labeled slices from it.
         call this to create a fresh dataset.
@@ -248,13 +250,13 @@ class MaskedSliceWav(object):
             with tf.name_scope('prefetch'):
                 ds = ds.prefetch(buffer_size=self.prefetch_sz)
 
-        return ds
+        self.dataset_itr = ds.make_one_shot_iterator()
+        save_obj = tf.contrib.data.make_saveable_from_iterator(self.dataset_itr)
+        self.add_saveable_objects({'iterator': save_obj})
 
-    @staticmethod
-    def wav_dataset_itr(ds):
-        return ds.make_one_shot_iterator()
 
-    @staticmethod
-    def wav_dataset_ops(ds):
-        return ds.make_one_shot_iterator().get_next()
+    def get_itr(self):
+        return self.dataset_itr
 
+    def get_op(self):
+        return self.dataset_itr.get_next()

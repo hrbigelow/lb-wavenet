@@ -1,5 +1,6 @@
 import tensorflow as tf
 from enum import IntEnum
+import ckpt
 
 
 class ArchCat(IntEnum):
@@ -21,7 +22,7 @@ class ArchCat(IntEnum):
     VALID_SAMPLES = 16 # number of valid samples seen so far
 
 
-class WaveNetArch(object):
+class WaveNetArch(ckpt.Checkpoint):
 
     '''Provides all parameters needed to fully determine a model, either for
     training or inference.  Manages all trainable variables and their saving
@@ -38,10 +39,14 @@ class WaveNetArch(object):
             n_gc_category,
             n_lc_in,
             n_lc_out,
-            add_summary=False,
-            n_keep_checkpoints=10,
+            add_summary,
+            # checkpoint related
+            n_keep_checkpoints,
+            ckpt_path,
+            resume_step,
             sess=None 
             ):
+        super().__init__(ckpt_path, n_keep_checkpoints, resume_step, sess)
         self.batch_sz = batch_sz
         self.n_quant = n_quant
         self.n_res = n_res
@@ -53,7 +58,6 @@ class WaveNetArch(object):
         self.n_lc_in = n_lc_in
         self.n_lc_out = n_lc_out
         self.add_summary = add_summary
-        self.n_keep_checkpoints = n_keep_checkpoints
         self.sess = sess
 
         self.graph_built = False
@@ -165,16 +169,6 @@ class WaveNetArch(object):
             tf.summary.histogram(name, var)
         return var
 
-    def _maybe_init_saver(self):
-        if not self.graph_built:
-            raise ValueError
-        if self.saver is None:
-            if tf.executing_eagerly():
-                self.saver = tf.contrib.eager.Saver(self.vars)
-            else:
-                self.saver = tf.train.Saver(self.vars,
-                        max_to_keep=self.n_keep_checkpoints)
-
     def _json_stem(self, json_file):
         import re
         m = re.fullmatch('(.+)\.json', json_file)
@@ -187,39 +181,4 @@ class WaveNetArch(object):
             self.sess.run(tf.global_variables_initializer())
             #self.sess.run([v.initializer for v in self.vars.values() if v.trainable])
         self.vars_initialized = True
-
-
-    def save(self, arch_pfx, step):
-        '''saves trainable variables, generating a special filename
-        that encodes architectural parameters'''
-        self._maybe_init_saver()
-        if tf.executing_eagerly():
-            path_pfx = self.saver.save(arch_pfx, step)
-        else:
-            path_pfx = self.saver.save(self.sess, arch_pfx, step)
-        return path_pfx
-
-    @staticmethod
-    def expand_ckpt(ckpt):
-        '''expand ckpt into list of ckpt files that the writer would generate'''
-        suffixes = ['index', 'meta', 'data-00000-of-00001']
-        return ['{}.{}'.format(ckpt, s) for s in suffixes]
-
-
-    def restore(self, ckpt_file):
-        '''finds the appropriate checkpoint file saved by 'save' and loads into
-        the existing graph'''
-        from sys import stderr
-        from os import access, R_OK
-        for fn in self.expand_ckpt(ckpt_file):
-            if not access(fn, R_OK):
-                print("Couldn't find checkpoint file {}".format(fn), file=stderr)
-                exit(1)
-        self._maybe_init_saver()
-        if tf.executing_eagerly():
-            self.saver.restore(ckpt_file)
-        else:
-            self.saver.restore(self.sess, ckpt_file)
-    
-
 
