@@ -16,7 +16,7 @@ import librosa
 import tensorflow as tf
 import numpy as np
 import ckpt
-from sys import stderr
+from sys import stderr, maxsize
 
 class MaskedSliceWav(ckpt.Checkpoint):
 
@@ -36,6 +36,9 @@ class MaskedSliceWav(ckpt.Checkpoint):
                 requested_slice_sz, slice_sz, mel_hop_sz), file=stderr) 
         self.slice_sz = slice_sz
         self.batch_sz = batch_sz
+        self.random_seed = tf.Variable(np.random.randint(maxsize),
+                dtype=tf.int64, name='random_seed') 
+        self.ckpt_position = tf.Variable(0, dtype=tf.int64, name='ckpt_position')
         
     def init_sample_catalog(self):
         self.sample_catalog = []
@@ -215,7 +218,7 @@ class MaskedSliceWav(ckpt.Checkpoint):
                 break
 
 
-    def init_dataset(self):
+    def build(self):
         '''parse a sample file and create a ts.data.Dataset of concatenated,
         labeled slices from it.
         call this to create a fresh dataset.
@@ -223,6 +226,7 @@ class MaskedSliceWav(ckpt.Checkpoint):
         zero_d = tf.TensorShape([])
         two_d = tf.TensorShape([self.batch_sz, None])
         three_d = tf.TensorShape([self.batch_sz, None, self.mel_spectrum_sz])
+
 
         with tf.name_scope('dataset'):
             with tf.name_scope('sample_map'):
@@ -233,13 +237,15 @@ class MaskedSliceWav(ckpt.Checkpoint):
 
             with tf.name_scope('shuffle_repeat'):
                 ds = ds.repeat()
-                ds = ds.shuffle(buffer_size=len(self.sample_catalog))
-                # ds = ds.shuffle(buffer_size=100)
-                itr = ds.make_one_shot_iterator()
+                buf_sz = len(self.sample_catalog)
+                ds = ds.shuffle(buffer_size=buf_sz, seed=self.random_seed)
+                ds = ds.skip(self.ckpt_position)
+                self.path_itr = ds.make_initializable_iterator()
+
                 # used this so a reassignment of 'itr' doesn't break the code
                 def gen_wrap():
                     return self._gen_slice_batch(gen_wrap.itr)
-                gen_wrap.itr = itr
+                gen_wrap.itr = self.path_itr 
 
             with tf.name_scope('slice_batch'):
                 ds = tf.data.Dataset.from_generator(
@@ -251,9 +257,14 @@ class MaskedSliceWav(ckpt.Checkpoint):
                 ds = ds.prefetch(buffer_size=self.prefetch_sz)
 
         self.dataset_itr = ds.make_one_shot_iterator()
-        save_obj = tf.contrib.data.make_saveable_from_iterator(self.dataset_itr)
-        self.add_saveable_objects({'iterator': save_obj})
 
+        # these two determine where in the dataset we will resume
+        self.add_saveable_objects({
+            'random_seed': self.random_seed,
+            'ckpt_position': self.ckpt_position
+            })
+
+        self.add_initializable_ops([self.path_itr])
 
     def get_itr(self):
         return self.dataset_itr

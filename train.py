@@ -164,7 +164,7 @@ def main():
 
     # this is where dset is annoyingly dependent on net 
     dset.set_receptive_field_size(net.get_recep_field_sz())
-    dset.init_dataset()
+    dset.build()
 
     dev_string = '/cpu:0' if args.cpu_only else '/gpu:0'
 
@@ -191,12 +191,15 @@ def main():
             _ = net.build_graph(*next(itr))
             assert len(net.vars) > 0
 
-        net.init_vars()
-        print('Initialized training graph.', file=stderr)
 
         if args.resume_step: 
-            net.restore(ckpt) 
-
+            net.restore() 
+            dset.restore()
+            print('Restored net and dset from checkpoint', file=stderr)
+        else:
+            net.init_vars()
+            dset.init_vars()
+            print('Initialized net and dset', file=stderr)
 
         summary_op = tf.summary.merge_all() if args.add_summary else None
         if summary_op is not None and args.tb_dir is None:
@@ -240,8 +243,10 @@ def main():
                     fw.add_summary(sess.run(summary_op), step)
 
             if step % args.save_interval == 0 and step != args.resume_step:
-                path = net.save(args.ckpt_path, step)
-                print('Saved checkpoint to %s\n' % path, file=stderr)
+                net_save_path = net.save(step)
+                dset_save_path = dset.save(step)
+                print('Saved checkpoints to {} and {}'.format(net_save_path, dset_save_path),
+                        file=stderr)
 
             step += 1
 

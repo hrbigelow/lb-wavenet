@@ -60,9 +60,7 @@ class WaveNetArch(ckpt.Checkpoint):
         self.add_summary = add_summary
         self.sess = sess
 
-        self.graph_built = False
         self.vars_initialized = False
-        self.saver = None
         self.filter_init = tf.contrib.layers.xavier_initializer_conv2d()
         self.bias_init = tf.constant_initializer(value=0.0, dtype=tf.float32)
 
