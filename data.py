@@ -76,14 +76,16 @@ class MaskedSliceWav(ckpt.Checkpoint):
         '''
         assert not tf.executing_eagerly()
         next_el = path_itr.get_next()
+        datum_count = self.ckpt_position
         while True:
             try:
+                datum_count += 1
                 vid, wav_path, mel_path = self.sess.run(next_el)
                 wav = np.load(wav_path.decode())
                 mel = np.load(mel_path.decode())
                 #print('loaded wav and mel of size {}'.format(wav.data.nbytes + mel.data.nbytes),
                 #        file=stderr)
-                yield int(vid), wav, mel
+                yield datum_count, int(vid), wav, mel
             except tf.errors.OutOfRangeError:
                 break
         return
@@ -91,14 +93,16 @@ class MaskedSliceWav(ckpt.Checkpoint):
     def _wav_gen_eager(self, path_itr):
         '''eager execution version of _wav_gen'''
         assert tf.executing_eagerly()
+        datum_count = self.ckpt_position
         while True:
             try:
+                datum_count += 1
                 vid, wav_path, mel_path = path_itr.get_next() 
                 wav = np.load(wav_path.numpy().decode())
                 mel = np.load(mel_path.numpy().decode())
                 #print('loaded wav and mel of size {}'.format(wav.data.nbytes + mel.data.nbytes),
                 #        file=stderr)
-                yield int(vid.numpy()), wav, mel
+                yield datum_count, int(vid.numpy()), wav, mel
             except tf.errors.OutOfRangeError:
                 break
         return
@@ -133,7 +137,7 @@ class MaskedSliceWav(ckpt.Checkpoint):
             while True:
                 try:
                     # import pdb; pdb.set_trace()
-                    vid, wav, mel = next(wav_gen) 
+                    datum_count, vid, wav, mel = next(wav_gen) 
                     snip = len(wav) % self.mel_hop_sz
                     wav = wav[:-snip or None]
                     if len(wav) != len(mel) * self.mel_hop_sz:
@@ -171,7 +175,7 @@ class MaskedSliceWav(ckpt.Checkpoint):
                             ids[cur_pos:cur_pos + need_sz],
                             axis=0)
                     cur_pos += need_sz 
-                    yield spliced_wav, spliced_mel, spliced_ids
+                    yield datum_count, spliced_wav, spliced_mel, spliced_ids
                     spliced_wav = np.empty(0, np.float) 
                     spliced_mel = np.empty([0, self.mel_spectrum_sz], np.float)
                     spliced_ids = np.empty(0, np.int32)
@@ -195,7 +199,10 @@ class MaskedSliceWav(ckpt.Checkpoint):
         ids[b][t] = vid or zero (mask)
         b = batch, t = timestep, c = channel
         '''
-        # construct the single (vid, wav) generator
+        # !!! this is where the single global item counter needs to be.
+        # iter_cnt how many times wav_gen has been iterated.
+        # it is 
+        # construct the single (iter_cnt, vid, wav, mel) generator
         if tf.executing_eagerly():
             wav_gen = self._wav_gen_eager(path_itr)
         else:
@@ -209,10 +216,13 @@ class MaskedSliceWav(ckpt.Checkpoint):
                 # this is probably expensive
                 # import pdb; pdb.set_trace()
                 batch = [next(g) for g in gens]
-                wav = np.stack([b[0] for b in batch])
-                mel = np.stack([b[1] for b in batch])
-                ids = np.stack([b[2] for b in batch])
-                yield wav, mel, ids
+                # cnt represents how many wav file readings have been made
+                # (repeated readings of the same wav file are counted separately)
+                cnt = batch[-1][0]
+                wav = np.stack([b[1] for b in batch])
+                mel = np.stack([b[2] for b in batch])
+                ids = np.stack([b[3] for b in batch])
+                yield cnt, wav, mel, ids
             except StopIteration:
                 # this will be raised if wav_itr runs out
                 break
@@ -227,7 +237,6 @@ class MaskedSliceWav(ckpt.Checkpoint):
         two_d = tf.TensorShape([self.batch_sz, None])
         three_d = tf.TensorShape([self.batch_sz, None, self.mel_spectrum_sz])
 
-
         with tf.name_scope('dataset'):
             with tf.name_scope('sample_map'):
                 ds = tf.data.Dataset.from_generator(
@@ -240,6 +249,9 @@ class MaskedSliceWav(ckpt.Checkpoint):
                 buf_sz = len(self.sample_catalog)
                 ds = ds.shuffle(buffer_size=buf_sz, seed=self.random_seed)
                 ds = ds.skip(self.ckpt_position)
+                # this iterator must be initializable because it is dependent
+                # on self.ckpt_position and self.random_seed, which must
+                # be initialized
                 self.path_itr = ds.make_initializable_iterator()
 
                 # used this so a reassignment of 'itr' doesn't break the code
@@ -265,6 +277,15 @@ class MaskedSliceWav(ckpt.Checkpoint):
             })
 
         self.add_initializable_ops([self.path_itr])
+
+    def save(self, step):
+        op = tf.assign(self.ckpt_position, step)
+        if tf.executing_eagerly():
+            pass
+        else:
+            self.sess.run(op)
+        super().save(step)
+
 
     def get_itr(self):
         return self.dataset_itr
