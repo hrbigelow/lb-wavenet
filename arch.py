@@ -60,7 +60,6 @@ class WaveNetArch(ckpt.Checkpoint):
         self.add_summary = add_summary
         self.sess = sess
 
-        self.vars_initialized = False
         self.filter_init = tf.contrib.layers.xavier_initializer_conv2d()
         self.bias_init = tf.constant_initializer(value=0.0, dtype=tf.float32)
 
@@ -172,11 +171,4 @@ class WaveNetArch(ckpt.Checkpoint):
         m = re.fullmatch('(.+)\.json', json_file)
         return m.group(1)
 
-    def init_vars(self):
-        if tf.executing_eagerly():
-            pass # variables are already initialized
-        else:
-            self.sess.run(tf.global_variables_initializer())
-            #self.sess.run([v.initializer for v in self.vars.values() if v.trainable])
-        self.vars_initialized = True
 

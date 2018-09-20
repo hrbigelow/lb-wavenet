@@ -165,6 +165,7 @@ def main():
     # this is where dset is annoyingly dependent on net 
     dset.set_receptive_field_size(net.get_recep_field_sz())
     dset.build()
+    dset.init_vars()
 
     dev_string = '/cpu:0' if args.cpu_only else '/gpu:0'
 
@@ -178,8 +179,8 @@ def main():
 
         # create the ops just once if not in eager mode
         if not args.tf_eager:
-            grads_and_vars_op, loss_op = \
-                    net.grad_var_loss(*dset.get_op())
+            file_read_count, *data_ops = dset.get_op()
+            grads_and_vars_op, loss_op = net.grad_var_loss(*data_ops)
             print('Built graph.', file=stderr)
 
             apply_grads_op = optimizer.apply_gradients(grads_and_vars_op)
@@ -188,18 +189,20 @@ def main():
         else:
             # must call this to create the variables
             itr = dset.get_itr()
-            _ = net.build_graph(*next(itr))
+            _, *data_ops = next(itr)
+            _ = net.build_graph(*data_ops)
             assert len(net.vars) > 0
 
+        # We have to run initialization ops regardless, since
+        # This is hacky since it has nothing to do with arch itself,
+        # just a global variables initializer
+        net.init_vars()
 
         if args.resume_step: 
             net.restore() 
             dset.restore()
             print('Restored net and dset from checkpoint', file=stderr)
-        else:
-            net.init_vars()
-            dset.init_vars()
-            print('Initialized net and dset', file=stderr)
+
 
         summary_op = tf.summary.merge_all() if args.add_summary else None
         if summary_op is not None and args.tb_dir is None:
@@ -216,7 +219,7 @@ def main():
         wav_itr = dset.get_itr()
         while step < max_steps:
             if args.tf_eager:
-                wav_input, mel_input, id_mask = next(wav_itr) 
+                file_read_count, wav_input, mel_input, id_mask = next(wav_itr) 
                 grads_and_vars, loss = net.grad_var_loss_eager(wav_input, mel_input, id_mask)
                 optimizer.apply_gradients(grads_and_vars)
 
@@ -244,7 +247,7 @@ def main():
 
             if step % args.save_interval == 0 and step != args.resume_step:
                 net_save_path = net.save(step)
-                dset_save_path = dset.save(step)
+                dset_save_path = dset.save(step, file_read_count)
                 print('Saved checkpoints to {} and {}'.format(net_save_path, dset_save_path),
                         file=stderr)
 

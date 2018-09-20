@@ -76,7 +76,7 @@ class MaskedSliceWav(ckpt.Checkpoint):
         '''
         assert not tf.executing_eagerly()
         next_el = path_itr.get_next()
-        datum_count = self.ckpt_position
+        datum_count = self.sess.run(self.ckpt_position)
         while True:
             try:
                 datum_count += 1
@@ -93,7 +93,7 @@ class MaskedSliceWav(ckpt.Checkpoint):
     def _wav_gen_eager(self, path_itr):
         '''eager execution version of _wav_gen'''
         assert tf.executing_eagerly()
-        datum_count = self.ckpt_position
+        datum_count = self.ckpt_position.numpy()
         while True:
             try:
                 datum_count += 1
@@ -201,7 +201,6 @@ class MaskedSliceWav(ckpt.Checkpoint):
         '''
         # !!! this is where the single global item counter needs to be.
         # iter_cnt how many times wav_gen has been iterated.
-        # it is 
         # construct the single (iter_cnt, vid, wav, mel) generator
         if tf.executing_eagerly():
             wav_gen = self._wav_gen_eager(path_itr)
@@ -218,11 +217,11 @@ class MaskedSliceWav(ckpt.Checkpoint):
                 batch = [next(g) for g in gens]
                 # cnt represents how many wav file readings have been made
                 # (repeated readings of the same wav file are counted separately)
-                cnt = batch[-1][0]
+                latest_file_read_count = batch[-1][0]
                 wav = np.stack([b[1] for b in batch])
                 mel = np.stack([b[2] for b in batch])
                 ids = np.stack([b[3] for b in batch])
-                yield cnt, wav, mel, ids
+                yield latest_file_read_count, wav, mel, ids
             except StopIteration:
                 # this will be raised if wav_itr runs out
                 break
@@ -262,8 +261,8 @@ class MaskedSliceWav(ckpt.Checkpoint):
             with tf.name_scope('slice_batch'):
                 ds = tf.data.Dataset.from_generator(
                         gen_wrap,
-                        (tf.int32, tf.float32, tf.int32),
-                        (two_d, three_d, two_d))
+                        (tf.int64, tf.int32, tf.float32, tf.int32),
+                        (zero_d, two_d, three_d, two_d))
 
             with tf.name_scope('prefetch'):
                 ds = ds.prefetch(buffer_size=self.prefetch_sz)
@@ -278,13 +277,13 @@ class MaskedSliceWav(ckpt.Checkpoint):
 
         self.add_initializable_ops([self.path_itr])
 
-    def save(self, step):
-        op = tf.assign(self.ckpt_position, step)
+    def save(self, step, read_count):
+        op = tf.assign(self.ckpt_position, read_count)
         if tf.executing_eagerly():
             pass
         else:
             self.sess.run(op)
-        super().save(step)
+        return super().save(step)
 
 
     def get_itr(self):
