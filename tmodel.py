@@ -289,7 +289,7 @@ class WaveNetTrain(ar.WaveNetArch):
         return total_loss
 
 
-    def build_graph(self, wav_input, lc_input, id_mask):
+    def build(self, wav_input, lc_input, id_mask):
         '''creates the training graph and returns the loss node for the graph.
         the inputs to this function are data.Dataset.iterator.get_next() operations.
         This graph performs the forward calculation in parallel across
@@ -329,26 +329,31 @@ class WaveNetTrain(ar.WaveNetArch):
 
         self.add_saveable_objects(self.vars)
 
-        return loss 
+        if tf.executing_eagerly():
+            grads_vars = self.grad_var_eager(loss)
+        else:
+            grads_vars = self.grad_var(loss)
 
+        #grads = [x[0] for x in grads_vars] 
+        #self.add_initializable_ops(grads)
 
-    def grad_var_loss_eager(self, wav_input, lc_input, id_mask):
-        with tf.GradientTape() as tape:
-            loss = self.build_graph(wav_input, lc_input, id_mask)
-            var_list = [v for v in self.vars.values() if v.trainable]
-        grads = tape.gradient(loss, var_list)
-        mean_grads = [tf.reduce_mean(tf.abs(g)) for g in grads if g is not None]
-        # print('Average magnitude of all gradients: ', sum(mean_grads).numpy() / len(mean_grads))
-
-        grads_vars = list(zip(grads, var_list))
-        # print('Variables with gradients: ', len(grads_vars))
         return grads_vars, loss
 
 
-    def grad_var_loss(self, wav_input, lc_input, id_mask):
-        loss_op = self.build_graph(wav_input, lc_input, id_mask)
+    def grad_var_eager(self, loss):
+        with tf.GradientTape() as tape:
+            var_list = [v for v in self.vars.values() if v.trainable]
+        grads = tape.gradient(loss, var_list)
+        # mean_grads = [tf.reduce_mean(tf.abs(g)) for g in grads if g is not None]
+        # print('Average magnitude of all gradients: ', sum(mean_grads).numpy() / len(mean_grads))
+        grads_vars = list(zip(grads, var_list))
+        # print('Variables with gradients: ', len(grads_vars))
+        return grads_vars
+
+
+    def grad_var(self, loss_op):
         var_list = [v for v in self.vars.values() if v.trainable]
         opt = tf.train.Optimizer(True, 'lb-wavenet')
         grads_vars_op = opt.compute_gradients(loss_op, var_list) 
-        return grads_vars_op, loss_op
+        return grads_vars_op
 

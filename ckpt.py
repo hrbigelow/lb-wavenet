@@ -1,5 +1,10 @@
 import tensorflow as tf
 
+# Usage: a class deriving from Checkpoint must call add_saveable_objects and
+# add_initializable_ops after it constructs all of its graph operations.  Then,
+# it must call init_vars before running the operations
+
+
 def _expand_ckpt(ckpt):
     '''expand ckpt into list of ckpt files that the writer would generate'''
     suffixes = ['index', 'meta', 'data-00000-of-00001']
@@ -19,7 +24,6 @@ class Checkpoint(object):
 
 
     def add_saveable_objects(self, objs):
-        '''add saveable objects'''
         self.saveable_objects.update(objs)
         self.initialized = True
 

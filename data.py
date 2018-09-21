@@ -267,7 +267,7 @@ class MaskedSliceWav(ckpt.Checkpoint):
             with tf.name_scope('prefetch'):
                 ds = ds.prefetch(buffer_size=self.prefetch_sz)
 
-        self.dataset_itr = ds.make_one_shot_iterator()
+        self.dataset_itr = ds.make_initializable_iterator()
 
         # these two determine where in the dataset we will resume
         self.add_saveable_objects({
@@ -275,7 +275,7 @@ class MaskedSliceWav(ckpt.Checkpoint):
             'ckpt_position': self.ckpt_position
             })
 
-        self.add_initializable_ops([self.path_itr])
+        self.add_initializable_ops([self.path_itr, self.dataset_itr])
 
     def save(self, step, read_count):
         op = tf.assign(self.ckpt_position, read_count)

@@ -180,22 +180,20 @@ def main():
         # create the ops just once if not in eager mode
         if not args.tf_eager:
             file_read_count, *data_ops = dset.get_op()
-            grads_and_vars_op, loss_op = net.grad_var_loss(*data_ops)
+            grads_and_vars_op, loss_op = net.build(*data_ops)
             print('Built graph.', file=stderr)
 
             apply_grads_op = optimizer.apply_gradients(grads_and_vars_op)
+            sess.run(tf.global_variables_initializer())
             print('Created gradients.', file=stderr)
 
         else:
             # must call this to create the variables
             itr = dset.get_itr()
             _, *data_ops = next(itr)
-            _ = net.build_graph(*data_ops)
+            _ = net.build(*data_ops)
             assert len(net.vars) > 0
 
-        # We have to run initialization ops regardless, since
-        # This is hacky since it has nothing to do with arch itself,
-        # just a global variables initializer
         net.init_vars()
 
         if args.resume_step: 
@@ -220,7 +218,7 @@ def main():
         while step < max_steps:
             if args.tf_eager:
                 file_read_count, wav_input, mel_input, id_mask = next(wav_itr) 
-                grads_and_vars, loss = net.grad_var_loss_eager(wav_input, mel_input, id_mask)
+                grads_and_vars, loss = net.build(wav_input, mel_input, id_mask)
                 optimizer.apply_gradients(grads_and_vars)
 
             else:
