@@ -1,7 +1,5 @@
 # training functions
 
-max_steps = 300000 
-
 def make_flusher(file_writer):
     import signal
     def cleanup(sig, frame):
@@ -36,6 +34,8 @@ def get_args():
             help='Enable tf_debug debugging console')
     parser.add_argument('--tf-eager', '-te', action='store_true', default=False,
             help='Enable tf Eager mode')
+    parser.add_argument('--max-steps', '-ms', type=int, default=1e20,
+            help='Maximum number of training steps')
 
     # Training parameter overrides
     parser.add_argument('--batch-size', '-bs', type=int, metavar='INT',
@@ -215,7 +215,7 @@ def main():
         print('Starting training...', file=stderr)
         step = args.resume_step or 1
         wav_itr = dset.get_itr()
-        while step < max_steps:
+        while step < args.max_steps:
             if args.tf_eager:
                 file_read_count, wav_input, mel_input, id_mask = next(wav_itr) 
                 grads_and_vars, loss = net.build(wav_input, mel_input, id_mask)
